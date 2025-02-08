@@ -72,8 +72,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 └───────┬──────────┘
         │
         ▼
-     S3-Compatible 
-      Object Storage
+  S3-Compatible Object Storage
 ```
 
 1. A user sends an HTTP request to the FastAPI endpoint, including the `url` and `api_key`.
@@ -332,7 +331,7 @@ We provide two separate Dockerfiles to handle the **Celery worker** and the **Ma
 # -----------------------------------------------------------------------------
 # 1) Start from your Python base image
 # -----------------------------------------------------------------------------
-FROM python:3.13.1-slim
+FROM python:3.13.2-slim
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Playwright, etc.
@@ -410,7 +409,7 @@ CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--c
 **`Dockerfile_MAIN_API`**:
 
 ```dockerfile
-FROM python:3.13.1-slim
+FROM python:3.13.2-slim
 
 WORKDIR /app
 
