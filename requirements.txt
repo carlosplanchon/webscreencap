@@ -1,0 +1,17 @@
+###############
+# --- API --- #
+###############
+# API:
+fastapi
+fastapi_cli
+uvicorn
+
+# Celery:
+celery
+redis
+flower
+
+#######################
+# --- CELERY TASK --- #
+#######################
+json5
