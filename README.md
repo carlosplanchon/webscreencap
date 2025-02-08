@@ -54,22 +54,22 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 ## Architecture Overview
 
 ```
-┌─────────────────┐
-│   FastAPI App   │
-│ (uvicorn/gunicorn)
-│   endpoints     │
-└───────┬─────────┘
+┌────────────────────┐
+│   FastAPI App      │
+│ (uvicorn/gunicorn) │
+│   endpoints        │
+└───────┬────────────┘
         │ (HTTP request)
-┌───────┴─────────┐
-│  Celery Worker   │
-│ capture_screenshot_and_html → Invokes Node.js script
-└───────┬─────────┘
+┌───────┴──────────────────────────────────────────────┐
+│  Celery Worker                                       │
+│ capture_screenshot_and_html → Invokes Node.js script │
+└───────┬──────────────────────────────────────────────┘
         │
-┌───────┴─────────┐
+┌───────┴──────────┐
 │   Node.js        │
 │   (scraper.js)   │
 │  Playwright etc. │
-└───────┬─────────┘
+└───────┬──────────┘
         │
         ▼
      S3-Compatible 
