@@ -4,7 +4,7 @@
 #
 
 app = 'webscreencap'
-primary_region = 'eze'
+primary_region = 'iad'
 
 [build]
 
