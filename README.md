@@ -49,6 +49,8 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 6. **REST API**  
    Built with **FastAPI**, offering straightforward endpoints to initiate and poll screenshot tasks.
 
+### DeepWiki Docs: [https://deepwiki.com/carlosplanchon/webscreencap](https://deepwiki.com/carlosplanchon/webscreencap)
+
 ---
 
 ## Architecture Overview
