@@ -4,8 +4,9 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from celery import states
 from celery.result import AsyncResult
-from celery_task import capture_screenshot_and_html
+from celery_task import celery_app, capture_screenshot_and_html
 
 
 # FastAPI Setup:
@@ -13,6 +14,12 @@ app = FastAPI(
     root_path="/webscreencap",
     title="WebScreenCAP"
 )
+
+
+# Celery reports any unknown task id as PENDING, so the ids we hand out are
+# remembered (with the same TTL as the results) to tell "queued" from "not found".
+def task_marker_key(task_id: str) -> str:
+    return f"webscreencap-task-{task_id}"
 
 
 # Models
@@ -47,6 +54,7 @@ async def capture_screenshot_with_api_key(url: str, api_key: str):
     try:
         # Create Celery task
         task = capture_screenshot_and_html.delay(url)
+        celery_app.backend.set(task_marker_key(task.id), "1")
         return TaskInitOut(
             id=task.id,
             message="Task started successfully"
@@ -72,24 +80,15 @@ async def get_task_details_json(task_id: str, api_key: str):
         # Look up the Celery task
         result = AsyncResult(task_id)
 
-        # If result is None or doesn't exist, handle as not found
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail="Task not found"
-            )
-
         # Current status
         status = result.status
         # Only show result if it's complete (successful or failure)
         output = result.result if result.ready() else None
 
-        return JSONResponse(
-            {
-            "task_id": task_id,
-            "status": status,
-            "result": output
-            }
+        # Unknown (or expired) ids also come back as PENDING
+        not_found = (
+            status == states.PENDING
+            and celery_app.backend.get(task_marker_key(task_id)) is None
         )
 
     except Exception as e:
@@ -97,6 +96,28 @@ async def get_task_details_json(task_id: str, api_key: str):
             status_code=500,
             detail=f"Error retrieving task details: {e}"
         )
+
+    if not_found:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found"
+        )
+
+    # Failed or revoked tasks hold an exception, which isn't JSON serializable
+    if isinstance(output, BaseException):
+        output = {
+            "status": "error",
+            "message": "Task failed",
+            "error": repr(output),
+        }
+
+    return JSONResponse(
+        {
+        "task_id": task_id,
+        "status": status,
+        "result": output
+        }
+    )
 
 
 if __name__ == "__main__":

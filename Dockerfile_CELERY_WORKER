@@ -43,8 +43,10 @@ RUN npm install -g pnpm
 # -----------------------------------------------------------------------------
 # 5) Install Node application dependencies (Playwright, etc.)
 #    NOTE: Since your package.json and pnpm-lock.yaml are in src/, COPY them from there.
+#    They go in /app/src, next to scraper.js: Celery runs /app/src/scraper.js and
+#    Node resolves modules relative to the script's directory.
 # -----------------------------------------------------------------------------
-WORKDIR /usr/src/app
+WORKDIR /app/src
 
 # Copy Node dependency manifests from src/
 COPY src/package*.json src/pnpm-lock.yaml ./
@@ -53,10 +55,6 @@ RUN pnpm install --frozen-lockfile
 
 # Install Playwright browser(s)
 RUN npx playwright install chromium
-
-# Copy the rest of your Node/JS code if needed (including scraper.js, etc.)
-# (If you only want to copy the "src" subfolder, you can do `COPY src/ ./src/` instead.)
-COPY src/ ./src/
 
 # (Optional) Expose the port if Node listens on 37563
 EXPOSE 37563

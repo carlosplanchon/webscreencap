@@ -249,6 +249,7 @@ curl "http://127.0.0.1:31137/webscreencap/api/task_details/abc123?api_key=mysecr
   }
 }
 ```
+- Returns `404` if the task id is unknown or its result has already expired (Celery keeps results for 1 day by default).
 
 ---
 
@@ -374,17 +375,16 @@ RUN npm install -g pnpm
 
 # -----------------------------------------------------------------------------
 # 5) Install Node application dependencies (Playwright, etc.)
+#    They go in /app/src, next to scraper.js: Celery runs /app/src/scraper.js and
+#    Node resolves modules relative to the script's directory.
 # -----------------------------------------------------------------------------
-WORKDIR /usr/src/app
+WORKDIR /app/src
 
 COPY src/package*.json src/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Install Playwright browser(s)
 RUN npx playwright install chromium
-
-# Copy the rest of your Node/JS code
-COPY src/ ./src/
 
 # (Optional) Expose a port if needed (e.g. if Node were to run a service)
 EXPOSE 37563

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 
 from celery import Celery
-from subprocess import run, PIPE
+from subprocess import run, PIPE, TimeoutExpired
 import os
 import json5
 from shared import CONFIG
+
+
+# Backstop in case scraper.js hangs past its own deadline (SCRIPT_TIMEOUT_MS):
+SCRAPER_TIMEOUT = 180  # seconds
 
 
 # Initialize Celery:
@@ -26,7 +30,8 @@ def capture_screenshot_and_html(self, url):
             ["node", script_path, url],
             stdout=PIPE,
             stderr=PIPE,
-            text=True
+            text=True,
+            timeout=SCRAPER_TIMEOUT
         )
 
         # Check return code
@@ -41,6 +46,12 @@ def capture_screenshot_and_html(self, url):
         output = process.stdout
         data = json5.loads(output)
 
+    except TimeoutExpired as e:
+        return {
+            "status": "error",
+            "message": "Timed out while processing the URL",
+            "error": str(e),
+        }
     except Exception as e:
         return {
             "status": "error",
