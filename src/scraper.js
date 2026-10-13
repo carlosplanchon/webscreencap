@@ -4,6 +4,7 @@ const { fetch } = require("cross-fetch");
 const stealth = require("puppeteer-extra-plugin-stealth")();
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const crypto = require("crypto");
+const util = require("util");
 const randomUseragent = require("random-useragent");
 const { assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
@@ -47,6 +48,16 @@ async function uploadToTigris(bucketName, fileName, fileContent, contentType) {
     }
 }
 
+// celery_task.py reads the result from stdout: one JSON line with the file URLs,
+// or with an error message short enough to show to API clients. The details
+// (stack traces, Playwright call logs) go to stderr and only reach the worker logs.
+function fail(message, details) {
+    // process.exit() can cut off output that's still being written, so wait for both.
+    process.stderr.write(`${details}\n`, () => {
+        process.stdout.write(`${JSON.stringify({ error: message })}\n`, () => process.exit(1));
+    });
+}
+
 async function autoScroll(page) {
     await page.evaluate(async (maxScrollMs) => {
         await new Promise((resolve) => {
@@ -71,16 +82,14 @@ async function autoScroll(page) {
 (async () => {
     const args = process.argv.slice(2);
     if (args.length !== 1) {
-        console.error("Usage: node script.js <URL>");
-        process.exit(1);
+        return fail("Expected exactly one URL", "Usage: node scraper.js <URL>");
     }
 
     const url = args[0];
 
     // unref() so the timer doesn't keep the process alive after a successful run.
     setTimeout(() => {
-        console.error(`Timed out after ${SCRIPT_TIMEOUT_MS} ms.`);
-        process.exit(1);
+        fail("Timed out while processing the URL", `Timed out after ${SCRIPT_TIMEOUT_MS} ms.`);
     }, SCRIPT_TIMEOUT_MS).unref();
 
     try {
@@ -129,13 +138,10 @@ async function autoScroll(page) {
         const screenshotUrl = await uploadToTigris(bucketName, screenshotFileName, screenshot, "image/png");
         const htmlUrl = await uploadToTigris(bucketName, htmlFileName, htmlContent, "text/html");
 
-        console.log({
-            message: "Screenshot and HTML saved successfully.",
-            screenshotUrl,
-            htmlUrl
-        });
+        console.log(JSON.stringify({ screenshotUrl, htmlUrl }));
     } catch (error) {
-        console.error("Error processing screenshot:", error);
-        process.exit(1);
+        // Only the first line of the message: Playwright appends its call log below it.
+        const message = String(error?.message ?? error).split("\n")[0];
+        fail(message, util.format("Error processing screenshot:", error));
     }
 })();

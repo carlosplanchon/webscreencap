@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 
 from celery import Celery
+from celery.utils.log import get_task_logger
 from subprocess import run, PIPE, TimeoutExpired
+import json
 import os
-import json5
 
 
 # Backstop in case scraper.js hangs past its own deadline (SCRIPT_TIMEOUT_MS):
 SCRAPER_TIMEOUT = 180  # seconds
+
+logger = get_task_logger(__name__)
 
 
 # Initialize Celery (both the API and the worker need these variables):
@@ -19,7 +22,23 @@ celery_app = Celery(
 )
 
 
-@celery_app.task(bind=True)
+class ScrapeError(Exception):
+    """A failed capture. Its message is meant for API clients."""
+
+
+def read_result(stdout):
+    # scraper.js prints its result as the last line of stdout, in JSON
+    lines = stdout.strip().splitlines()
+    try:
+        result = json.loads(lines[-1])
+    except (IndexError, ValueError):
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+# A ScrapeError is an expected outcome: the task still ends as FAILURE, but the
+# worker logs it as INFO, without a traceback.
+@celery_app.task(bind=True, throws=(ScrapeError,))
 def capture_screenshot_and_html(self, url):
     script_path = os.path.join(os.path.dirname(__file__), "scraper.js")
 
@@ -32,36 +51,22 @@ def capture_screenshot_and_html(self, url):
             text=True,
             timeout=SCRAPER_TIMEOUT
         )
+    except TimeoutExpired:
+        raise ScrapeError("Timed out while processing the URL")
 
-        # Check return code
-        if process.returncode != 0:
-            return {
-                "status": "error",
-                "message": "Failed to process the URL",
-                "error": process.stderr,
-            }
-
-        # Parse the script's JSON output
-        output = process.stdout
-        data = json5.loads(output)
-
-    except TimeoutExpired as e:
-        return {
-            "status": "error",
-            "message": "Timed out while processing the URL",
-            "error": str(e),
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": "An unexpected error occurred",
-            "error": str(e),
-        }
+    result = read_result(process.stdout)
+    if process.returncode != 0 or "screenshotUrl" not in result:
+        # The details (stack traces, ...) stay in the worker logs
+        logger.warning(
+            "scraper.js failed for %s (exit code %s):\n%s",
+            url, process.returncode, process.stderr
+        )
+        raise ScrapeError(result.get("error") or "Failed to process the URL")
 
     # Successful scrape
     return {
         "status": "success",
         "message": "Screenshot and HTML processed successfully",
-        "screenshot_url": data.get("screenshotUrl"),
-        "html_url": data.get("htmlUrl"),
+        "screenshot_url": result["screenshotUrl"],
+        "html_url": result["htmlUrl"],
     }

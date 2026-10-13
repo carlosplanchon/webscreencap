@@ -8,7 +8,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, HttpUrl
 from celery import states
 from celery.result import AsyncResult
-from celery_task import celery_app, capture_screenshot_and_html
+from celery_task import ScrapeError, celery_app, capture_screenshot_and_html
 
 
 # FastAPI Setup:
@@ -56,12 +56,14 @@ class ScreenshotRequest(BaseModel):
     url: HttpUrl
 
 
+# The endpoints are plain `def`: they block on Redis, so FastAPI runs them in its
+# threadpool instead of on the event loop.
 @app.post(
     "/api/task/screenshot",
     response_model=TaskInitOut,
     dependencies=[Depends(require_api_key)],
 )
-async def capture_screenshot_with_api_key(request: ScreenshotRequest):
+def capture_screenshot_with_api_key(request: ScreenshotRequest):
     """
     Endpoint to initiate a screenshot capture task.
     Requires the `X-API-Key` header.
@@ -86,7 +88,7 @@ async def capture_screenshot_with_api_key(request: ScreenshotRequest):
     response_class=JSONResponse,
     dependencies=[Depends(require_api_key)],
 )
-async def get_task_details_json(task_id: str):
+def get_task_details_json(task_id: str):
     """
     Endpoint to retrieve task details by task ID.
     Requires the `X-API-Key` header.
@@ -118,12 +120,12 @@ async def get_task_details_json(task_id: str):
             detail="Task not found"
         )
 
-    # Failed or revoked tasks hold an exception, which isn't JSON serializable
+    # Failed or revoked tasks hold an exception. Only capture errors are meant for
+    # clients; anything else stays in the worker logs.
     if isinstance(output, BaseException):
         output = {
             "status": "error",
-            "message": "Task failed",
-            "error": repr(output),
+            "message": str(output) if isinstance(output, ScrapeError) else "Task failed",
         }
 
     return JSONResponse(

@@ -213,7 +213,7 @@ curl -X POST "http://127.0.0.1:31137/webscreencap/api/task/screenshot" \
 }
 ```
 - `id` is the unique Celery task identifier.
-- If the URL points to a non-public address (localhost, a private network, a cloud metadata endpoint...), the task ends with an error result. Redirects and anything the page loads are held to the same rule.
+- If the URL points to a non-public address (localhost, a private network, a cloud metadata endpoint...), the task fails. Redirects and anything the page loads are held to the same rule.
 - Screenshots are full-page but cut at 1920×8192 px, so that very long pages don't run the worker out of memory (`MAX_SCREENSHOT_WIDTH` / `MAX_SCREENSHOT_HEIGHT` in `scraper.js`).
 
 ### 2. Get Task Details
@@ -245,6 +245,18 @@ curl "http://127.0.0.1:31137/webscreencap/api/task_details/abc123" \
   }
 }
 ```
+- While the task waits or runs, `status` is `PENDING` and `result` is `null`.
+- If the capture fails, `status` is `FAILURE` and `result.message` says why; the details stay in the worker logs:
+  ```json
+  {
+    "task_id": "abc123",
+    "status": "FAILURE",
+    "result": {
+      "status": "error",
+      "message": "page.goto: net::ERR_CERT_DATE_INVALID at https://expired.badssl.com/"
+    }
+  }
+  ```
 - Returns `404` if the task id is unknown or its result has already expired (Celery keeps results for 1 day by default).
 
 ---
