@@ -17,8 +17,10 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
   - [2. Get Task Details](#2-get-task-details)
 - [Running the Celery Worker](#running-the-celery-worker)
 - [Local Development](#local-development)
+  - [Running Everything with Docker Compose](#running-everything-with-docker-compose)
   - [Installing Dependencies with `dependencies.sh`](#installing-dependencies-with-dependenciessh)
   - [Python Dependencies](#python-dependencies)
+- [Tests](#tests)
 - [Dockerization](#dockerization)
   - [Dockerfile for the Celery Worker](#dockerfile-for-the-celery-worker)
   - [Dockerfile for the Main API](#dockerfile-for-the-main-api)
@@ -287,6 +289,25 @@ For local development:
 4. **Run** the FastAPI server and Celery worker.
 5. **Test** with cURL or a REST client (Postman, Insomnia, etc.).
 
+### Running Everything with Docker Compose
+
+`compose.yaml` starts the whole service locally: the API, the worker, Redis, and a local S3 ([moto](https://github.com/getmoto/moto)) instead of Tigris.
+
+```bash
+docker compose up --build
+```
+
+The API answers on `http://127.0.0.1:31337/webscreencap/api`, with the API key `local-dev-key`:
+
+```bash
+curl -X POST "http://127.0.0.1:31337/webscreencap/api/task/screenshot" \
+  -H "X-API-Key: local-dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
+```
+
+The captured files stay in moto's memory, and their URLs point to `10.250.250.10:5000`, which a Linux host can reach directly.
+
 ### Installing Dependencies with `dependencies.sh`
 
 If you are on an **Arch Linux** (or derivative) system, `src/dependencies.sh` installs the system packages for Node.js and Playwright's Chromium, then the Node modules exactly as pinned in `pnpm-lock.yaml`:
@@ -314,6 +335,25 @@ uv lock --upgrade        # upgrade the pinned versions
 ```
 
 The `dev` group (`fastapi-cli`, `flower`) is only for local use: the Docker images install the rest with `uv sync --locked --no-dev`, which fails if `uv.lock` is out of date with `pyproject.toml`.
+
+---
+
+## Tests
+
+`tests/run.sh` runs the test suite in a throwaway Docker Compose stack (`compose.test.yaml`) and removes the stack afterwards:
+
+```bash
+tests/run.sh               # everything
+tests/run.sh -k redirect   # only the tests whose name matches
+```
+
+Besides the service itself, that stack has a "public" test website and an internal service that browsers must never reach. The tests cover:
+
+- **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results and the format of failures.
+- **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets and so on, while public addresses still load.
+- **Captures**: pages that never stop making requests, the 1920×8192 px cap, the fonts for non-Latin scripts and the file URL settings.
+
+They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies.
 
 ---
 

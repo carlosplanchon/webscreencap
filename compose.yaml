@@ -1,0 +1,78 @@
+# Local development stack: the API and the worker, with Redis and a local S3 (moto)
+# instead of Tigris. Start it with `docker compose up --build`; the API answers on
+# http://127.0.0.1:31337/webscreencap/api with the key "local-dev-key".
+# Files go to moto's in-memory bucket, and their URLs point to 10.250.250.10:5000,
+# which a Linux host can reach directly.
+name: webscreencap
+
+x-env: &env
+  API_KEY: local-dev-key
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  AWS_REGION: us-east-1
+  # An IP, not a host name: with a name, the S3 SDK puts the bucket in the host
+  # name (virtual-hosted style), which would need DNS for it
+  AWS_ENDPOINT_URL_S3: http://10.250.250.10:5000
+  AWS_ACCESS_KEY_ID: local
+  AWS_SECRET_ACCESS_KEY: local
+  BUCKET_NAME: webscreencap
+
+services:
+  redis:
+    image: redis:7.4.11-alpine
+
+  s3:
+    image: motoserver/moto:5.2.3
+    networks:
+      default:
+        ipv4_address: 10.250.250.10
+
+  # Creates the bucket once moto is up (it starts empty)
+  s3-bucket:
+    image: python:3.13.16-slim-bookworm
+    command:
+      - python
+      - -c
+      - |
+        import time, urllib.error, urllib.request
+        for _ in range(60):
+            try:
+                urllib.request.urlopen(urllib.request.Request("http://10.250.250.10:5000/webscreencap", method="PUT"))
+                break
+            except urllib.error.HTTPError as error:
+                if error.code == 409:  # already there
+                    break
+                raise
+            except OSError:
+                time.sleep(1)
+        else:
+            raise SystemExit("moto didn't come up")
+    depends_on: [s3]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile_MAIN_API
+    environment: *env
+    ports:
+      - "127.0.0.1:31337:31337"
+    depends_on: [redis]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile_CELERY_WORKER
+    environment: *env
+    # Reaps Chromium's leftover processes, as Fly's own init does in production
+    init: true
+    depends_on:
+      redis:
+        condition: service_started
+      s3-bucket:
+        condition: service_completed_successfully
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.250.250.0/24
