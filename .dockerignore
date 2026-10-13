@@ -5,6 +5,9 @@
 # Same for the Python environment (uv sync creates it inside the image).
 **/.venv
 
+# And for the ad-blocking cache: the build makes a fresh one (see src/adblocker.js).
+**/adblocker-engine.bin
+
 # Secrets come from environment variables (Fly secrets), never from the image.
 **/.env
 **/config.toml

@@ -5,12 +5,17 @@ FROM python:3.13.2-slim
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Playwright, etc.
+#    The Noto fonts cover what Liberation doesn't (CJK, Arabic, Devanagari,
+#    Thai, emoji...), which otherwise shows up as boxes in the screenshots.
 # -----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
     ca-certificates \
     fonts-liberation \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fonts-noto-core \
     libappindicator3-1 \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -73,6 +78,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 COPY src/ /app/src/
 WORKDIR /app/src
+
+# Download and parse the ad-blocking lists once, here, instead of in every capture
+RUN node adblocker.js
 
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the Celery worker

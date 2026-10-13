@@ -18,5 +18,3 @@ pnpm install valid-url
 pnpm playwright install chromium
 
 pnpm install @aws-sdk/client-s3
-
-pnpm install random-useragent

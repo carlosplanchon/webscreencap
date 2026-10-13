@@ -1,13 +1,15 @@
 const { chromium } = require("playwright-extra");
-const { PlaywrightBlocker } = require("@ghostery/adblocker-playwright");
-const { fetch } = require("cross-fetch");
 const stealth = require("puppeteer-extra-plugin-stealth")();
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const crypto = require("crypto");
 const util = require("util");
-const randomUseragent = require("random-useragent");
+const { loadBlocker } = require("./adblocker");
 const { assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
+// After the page's "load" event, how long to wait at most for the network to go quiet.
+// Waiting for "networkidle" alone (discouraged by Playwright) never ends on pages with
+// constant traffic (analytics, chats, polling), so those hit the 60 s timeout.
+const NETWORK_SETTLE_MS = 5000;
 // Upper bound for autoScroll, so pages with infinite scroll can't keep it going forever.
 const MAX_SCROLL_MS = 60000;
 // Hard deadline for the whole run (celery_task.py kills it at SCRAPER_TIMEOUT as a backstop).
@@ -104,18 +106,20 @@ async function autoScroll(page) {
             headless: true,
             proxy: { server: proxy.url }
         });
-        const context = await browser.newContext({ 
-            viewport: { width: 1920, height: 1080 },
-            userAgent: randomUseragent.getRandom() 
+        // No userAgent here: the stealth plugin sets a current desktop Chrome one,
+        // matching the engine that renders the page.
+        const context = await browser.newContext({
+            viewport: { width: 1920, height: 1080 }
         });
         const page = await context.newPage();
 
         // Enable ad blocking
-        const blocker = await PlaywrightBlocker.fromPrebuiltAdsAndTracking(fetch);
+        const blocker = await loadBlocker();
         blocker.enableBlockingInPage(page);
 
         // Navigate to the URL
-        await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+        await page.goto(url, { waitUntil: "load", timeout: 60000 });
+        await page.waitForLoadState("networkidle", { timeout: NETWORK_SETTLE_MS }).catch(() => {});
         await autoScroll(page);
 
         // Capture screenshot and HTML content

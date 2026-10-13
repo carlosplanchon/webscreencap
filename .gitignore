@@ -5,3 +5,5 @@ config.toml
 .venv/
 node_modules/
 __pycache__/
+# Built by src/adblocker.js
+adblocker-engine.bin

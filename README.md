@@ -38,7 +38,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Uses [playwright-extra](https://www.npmjs.com/package/playwright-extra) plus stealth plugins to reduce detection.
 
 3. **Ad-blocking**  
-   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages.
+   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. The filter lists are downloaded and parsed when the worker image is built.
 
 4. **S3-Compatible Upload**  
    Captured artifacts are uploaded to Tigris (or any S3-compatible storage configured via environment variables).
@@ -302,7 +302,6 @@ pnpm install cross-fetch
 pnpm install @ghostery/adblocker-playwright
 pnpm install valid-url
 pnpm install @aws-sdk/client-s3
-pnpm install random-useragent
 pnpm playwright install chromium
 ```
 
@@ -339,12 +338,17 @@ FROM python:3.13.2-slim
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Playwright, etc.
+#    The Noto fonts cover what Liberation doesn't (CJK, Arabic, Devanagari,
+#    Thai, emoji...), which otherwise shows up as boxes in the screenshots.
 # -----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
     ca-certificates \
     fonts-liberation \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fonts-noto-core \
     libappindicator3-1 \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -404,6 +408,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 COPY src/ /app/src/
 WORKDIR /app/src
+
+# Download and parse the ad-blocking lists once, here, instead of in every capture
+RUN node adblocker.js
 
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the Celery worker
