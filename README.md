@@ -147,8 +147,13 @@ Configure the following environment variables **before** running the application
 | `BUCKET_NAME`          | S3 bucket name                                                | `screenshots-bucket`                               |
 | `CELERY_BROKER_URL`    | Celery broker URL                                             | `redis://localhost:6379/0`                          |
 | `CELERY_RESULT_BACKEND`| Celery result backend                                         | `redis://localhost:6379/0`                          |
+| `FILE_URL_MODE`        | How the returned file URLs are built: `presigned` (default) or `public` | `presigned`                              |
+| `PRESIGNED_URL_EXPIRES_IN` | Lifetime of presigned URLs, in seconds (up to 604800, 7 days) | `86400` (default, 1 day)                 |
+| `PUBLIC_FILE_BASE_URL` | Base of the URLs in `public` mode (required there)            | `https://screenshots-bucket.t3.tigrisfiles.io`      |
 
 > **Note**: Both the API and the Celery worker need `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`, and fail at startup if either is missing.
+
+**File URLs**: by default, the worker returns presigned URLs, which work even if the bucket is private and expire after `PRESIGNED_URL_EXPIRES_IN` seconds (by default 1 day, as long as Celery keeps the task result). If the bucket is public, set `FILE_URL_MODE=public` and `PUBLIC_FILE_BASE_URL` to get permanent URLs (`<PUBLIC_FILE_BASE_URL>/<file>`); on Tigris, public files are served from `https://<bucket>.t3.tigrisfiles.io`. These three variables only matter to the worker.
 
 ---
 
@@ -238,8 +243,8 @@ curl "http://127.0.0.1:31337/webscreencap/api/task_details/abc123" \
   "result": {
     "status": "success",
     "message": "Screenshot and HTML processed successfully",
-    "screenshot_url": "https://<S3-endpoint>/screenshots-bucket/screenshot-<timestamp>-<hash>.png",
-    "html_url": "https://<S3-endpoint>/screenshots-bucket/page-<timestamp>-<hash>.html"
+    "screenshot_url": "https://screenshots-bucket.<S3-endpoint>/screenshot-<timestamp>-<hash>.png?X-Amz-Algorithm=...&X-Amz-Signature=...",
+    "html_url": "https://screenshots-bucket.<S3-endpoint>/page-<timestamp>-<hash>.html?X-Amz-Algorithm=...&X-Amz-Signature=..."
   }
 }
 ```
@@ -504,6 +509,14 @@ fly secrets set -a webscreencap \
 ```
 
 Fly will store these as secrets and inject them into your application’s environment at runtime. Run the same command with `-a webscreencap-celery-worker`, since **both** the Celery worker app and the main API app need them. Setting secrets restarts the app’s Machines; add `--stage` to apply them on the next deploy instead.
+
+The file URL settings aren't secret, so they can go in an `[env]` section of `fly_celery_worker.toml` instead (only needed to change the defaults):
+
+```toml
+[env]
+  FILE_URL_MODE = 'public'
+  PUBLIC_FILE_BASE_URL = 'https://<bucket>.t3.tigrisfiles.io'
+```
 
 ---
 

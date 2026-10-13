@@ -1,6 +1,7 @@
 const { chromium } = require("playwright-extra");
 const stealth = require("puppeteer-extra-plugin-stealth")();
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("crypto");
 const util = require("util");
 const { loadBlocker } = require("./adblocker");
@@ -40,14 +41,38 @@ async function uploadToTigris(bucketName, fileName, fileContent, contentType) {
 
     try {
         const command = new PutObjectCommand(params);
-        const data = await s3.send(command);
-        // console.log(`File uploaded successfully: ${fileName}`);
-        // AWS_ENDPOINT_URL_S3 already includes the scheme (e.g. https://fly.storage.tigris.dev).
-        return `${process.env.AWS_ENDPOINT_URL_S3.replace(/\/+$/, "")}/${bucketName}/${fileName}`;
+        await s3.send(command);
     } catch (error) {
         console.error("Error uploading to Tigris:", error);
         throw new Error("Failed to upload file to Tigris Object Storage.");
     }
+}
+
+// How the file URLs in the result are built (FILE_URL_MODE):
+//  - "presigned" (default): signed URLs, so the bucket can stay private. They expire
+//    after PRESIGNED_URL_EXPIRES_IN seconds (default: 1 day, like the task result).
+//  - "public": PUBLIC_FILE_BASE_URL followed by the file name, for public buckets
+//    (on Tigris, https://<bucket>.t3.tigrisfiles.io).
+function fileUrlBuilder(bucketName) {
+    const mode = process.env.FILE_URL_MODE || "presigned";
+    if (mode === "public") {
+        const base = process.env.PUBLIC_FILE_BASE_URL;
+        if (!base) {
+            throw new Error("FILE_URL_MODE=public needs PUBLIC_FILE_BASE_URL");
+        }
+        return async (fileName) => `${base.replace(/\/+$/, "")}/${fileName}`;
+    }
+    if (mode === "presigned") {
+        const expiresIn = Number(process.env.PRESIGNED_URL_EXPIRES_IN || 86400);
+        // Presigned URLs (SigV4) can't last more than 7 days
+        if (!Number.isInteger(expiresIn) || expiresIn <= 0 || expiresIn > 604800) {
+            throw new Error("PRESIGNED_URL_EXPIRES_IN must be a whole number of seconds, up to 604800 (7 days)");
+        }
+        return (fileName) => getSignedUrl(
+            s3, new GetObjectCommand({ Bucket: bucketName, Key: fileName }), { expiresIn }
+        );
+    }
+    throw new Error(`FILE_URL_MODE must be "presigned" or "public", got "${mode}"`);
 }
 
 // celery_task.py reads the result from stdout: one JSON line with the file URLs,
@@ -95,6 +120,10 @@ async function autoScroll(page) {
     }, SCRIPT_TIMEOUT_MS).unref();
 
     try {
+        // Bad URL settings fail here, before doing any work
+        const bucketName = process.env.BUCKET_NAME;
+        const fileUrl = fileUrlBuilder(bucketName);
+
         // Only public http(s) targets; the proxy applies the same rule to
         // everything the page loads afterwards.
         await assertPublicUrl(url);
@@ -139,14 +168,16 @@ async function autoScroll(page) {
 
         // Generate random hex string for filenames
         const randomHex = crypto.randomBytes(32).toString("hex");
-        const bucketName = process.env.BUCKET_NAME;
         const screenshotFileName = `screenshot-${Date.now()}-${randomHex}.png`;
         const htmlFileName = `page-${Date.now()}-${randomHex}.html`;
 
-        const screenshotUrl = await uploadToTigris(bucketName, screenshotFileName, screenshot, "image/png");
-        const htmlUrl = await uploadToTigris(bucketName, htmlFileName, htmlContent, "text/html");
+        await uploadToTigris(bucketName, screenshotFileName, screenshot, "image/png");
+        await uploadToTigris(bucketName, htmlFileName, htmlContent, "text/html");
 
-        console.log(JSON.stringify({ screenshotUrl, htmlUrl }));
+        console.log(JSON.stringify({
+            screenshotUrl: await fileUrl(screenshotFileName),
+            htmlUrl: await fileUrl(htmlFileName)
+        }));
     } catch (error) {
         // Only the first line of the message: Playwright appends its call log below it.
         const message = String(error?.message ?? error).split("\n")[0];
