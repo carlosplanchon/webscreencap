@@ -16,7 +16,7 @@ const MAX_SCROLL_MS = 60000;
 const SCRIPT_TIMEOUT_MS = 150000;
 // Screenshots are cut at this size. Full-page captures grow with the page: a long
 // Wikipedia article alone ran the 1 GB worker out of memory, while capped at 8192 px
-// it peaked at ~600 MB. Raise it only together with the VM's memory.
+// it peaked at ~700 MB. Raise it only together with the VM's memory.
 const MAX_SCREENSHOT_WIDTH = 1920;
 const MAX_SCREENSHOT_HEIGHT = 8192;
 
@@ -111,11 +111,15 @@ async function autoScroll(page) {
         const context = await browser.newContext({
             viewport: { width: 1920, height: 1080 }
         });
+        // No popups, as in a regular browser without a click. A capture has no use for
+        // them, and with Playwright 1.64 and the adblocker, a popup plus an iframe to a
+        // blocked address kept the page from ever finishing loading.
+        await context.addInitScript(() => { window.open = () => null; });
         const page = await context.newPage();
 
-        // Enable ad blocking
+        // Enable ad blocking (before navigating, so it sees every request)
         const blocker = await loadBlocker();
-        blocker.enableBlockingInPage(page);
+        await blocker.enableBlockingInPage(page);
 
         // Navigate to the URL
         await page.goto(url, { waitUntil: "load", timeout: 60000 });

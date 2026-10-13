@@ -95,7 +95,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 
 - **Python** ≥ 3.13 (uv installs it if it's missing)
 - **[uv](https://docs.astral.sh/uv/)** for Python dependencies
-- **Node.js** ≥ 16
+- **Node.js** 22 or later (the worker image uses 24)
 - **npm** / **pnpm** / **yarn** for installing Node dependencies
 - **Redis** (or another Celery-compatible broker) for message brokering
 - **S3-Compatible Object Storage** (e.g., Tigris, MinIO, AWS S3) credentials
@@ -324,7 +324,7 @@ We provide two separate Dockerfiles to handle the **Celery worker** and the **Ma
 # -----------------------------------------------------------------------------
 # 1) Start from your Python base image
 # -----------------------------------------------------------------------------
-FROM python:3.13.2-slim
+FROM python:3.13.16-slim-bookworm
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Playwright, etc.
@@ -358,15 +358,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
-# 3) Install Node.js (example: Node 20)
+# 3) Install Node.js 24 (LTS; Playwright needs 22 or later)
 # -----------------------------------------------------------------------------
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs
 
 # -----------------------------------------------------------------------------
-# 4) Install pnpm globally
+# 4) Install pnpm globally (pinned, so builds don't pick up a new major by surprise)
 # -----------------------------------------------------------------------------
-RUN npm install -g pnpm
+RUN npm install -g pnpm@12.11.2
 
 # -----------------------------------------------------------------------------
 # 5) Install Node application dependencies (Playwright, etc.)
@@ -378,8 +378,9 @@ WORKDIR /app/src
 COPY src/package*.json src/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-# Install Playwright browser(s)
-RUN npx playwright install chromium
+# Install Playwright's browser: only Chromium's headless shell, since scraper.js
+# always runs headless (the full Chromium is only needed for headed runs)
+RUN npx playwright install --only-shell chromium
 
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (Celery, etc.)
@@ -401,7 +402,7 @@ RUN node adblocker.js
 
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the Celery worker
-#    One task at a time: each capture's Chromium takes ~450-600 MB, and in tests
+#    One task at a time: each capture's Chromium takes ~500-700 MB, and in tests
 #    with the 1 GB of fly_celery_worker.toml two heavy pages at once hit the limit.
 # -----------------------------------------------------------------------------
 CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
@@ -412,7 +413,7 @@ CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--c
 **`Dockerfile_MAIN_API`**:
 
 ```dockerfile
-FROM python:3.13.2-slim
+FROM python:3.13.16-slim-bookworm
 COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 
 WORKDIR /app
