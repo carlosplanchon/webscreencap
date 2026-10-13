@@ -7,6 +7,7 @@ app = 'webscreencap'
 primary_region = 'iad'
 
 [build]
+  dockerfile = 'Dockerfile_MAIN_API'
 
 [http_service]
   internal_port = 31337

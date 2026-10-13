@@ -41,11 +41,6 @@ def task_marker_key(task_id: str) -> str:
 
 
 # Models
-class TaskOut(BaseModel):
-    id: str
-    status: str
-
-
 class TaskInitOut(BaseModel):
     id: str
     message: str
@@ -139,4 +134,4 @@ def get_task_details_json(task_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=31137)
+    uvicorn.run(app, host="127.0.0.1", port=31337)

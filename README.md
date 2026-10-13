@@ -121,15 +121,13 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    > This creates a `.venv` with the exact versions pinned in `uv.lock` (the dependencies are declared in `pyproject.toml`), including the `dev` group (`fastapi-cli`, `flower`), which the Docker images leave out.
 
 3. **Install Node.js dependencies**:
-   - If you’re on Arch Linux (or derivative), you can leverage the `dependencies.sh` script, which installs system dependencies plus Node modules via **pnpm**.
-   - Otherwise, ensure you have Node.js installed, then run:
+   - If you’re on Arch Linux (or derivative), you can leverage the `src/dependencies.sh` script, which installs system dependencies plus Node modules via **pnpm**.
+   - Otherwise, ensure you have Node.js and pnpm installed, then run:
      ```bash
-     cd <folder-containing-scraper.js>
-     npm install
-     # or pnpm install
-     # or yarn install
+     cd src
+     pnpm install --frozen-lockfile
+     pnpm playwright install chromium
      ```
-   - Install the same libraries listed in `dependencies.sh` (Playwright, etc.) if not already covered.
 
 4. **Set up or ensure you have a running Celery broker** (e.g., Redis, RabbitMQ).
 
@@ -161,7 +159,7 @@ Configure the following environment variables **before** running the application
 From the `src/` directory, with uvicorn:
 
 ```bash
-uv run uvicorn main_api:app --host 0.0.0.0 --port 31137
+uv run uvicorn main_api:app --host 0.0.0.0 --port 31337
 ```
 
 - `main_api:app` references your FastAPI application file/module and the `app` object within it.
@@ -199,7 +197,7 @@ POST /api/task/screenshot
 
 **Example**:
 ```bash
-curl -X POST "http://127.0.0.1:31137/webscreencap/api/task/screenshot" \
+curl -X POST "http://127.0.0.1:31337/webscreencap/api/task/screenshot" \
   -H "X-API-Key: mysecretkey" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com"}'
@@ -228,7 +226,7 @@ GET /api/task_details/{task_id}
 
 **Example**:
 ```bash
-curl "http://127.0.0.1:31137/webscreencap/api/task_details/abc123" \
+curl "http://127.0.0.1:31337/webscreencap/api/task_details/abc123" \
   -H "X-API-Key: mysecretkey"
 ```
 
@@ -286,22 +284,14 @@ For local development:
 
 ### Installing Dependencies with `dependencies.sh`
 
-If you are on an **Arch Linux** (or derivative) system, we include a `dependencies.sh` script that installs necessary system packages for Node.js, Playwright, and Puppeteer:
+If you are on an **Arch Linux** (or derivative) system, `src/dependencies.sh` installs the system packages for Node.js and Playwright's Chromium, then the Node modules exactly as pinned in `pnpm-lock.yaml`:
 
 ```bash
 sudo pacman -S nodejs npm pnpm --noconfirm --needed
-# Required by Puppeteer/Playwright.
+# Required by Playwright's Chromium.
 sudo pacman -S atk at-spi2-atk libcups libxkbcommon libxcomposite alsa-lib --noconfirm --needed
 
-# Now run pnpm-based installations
-pnpm install playwright
-pnpm install express
-pnpm install playwright-extra
-pnpm install puppeteer-extra-plugin-stealth
-pnpm install cross-fetch
-pnpm install @ghostery/adblocker-playwright
-pnpm install valid-url
-pnpm install @aws-sdk/client-s3
+pnpm install --frozen-lockfile
 pnpm playwright install chromium
 ```
 
@@ -391,9 +381,6 @@ RUN pnpm install --frozen-lockfile
 # Install Playwright browser(s)
 RUN npx playwright install chromium
 
-# (Optional) Expose a port if needed (e.g. if Node were to run a service)
-EXPOSE 37563
-
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (Celery, etc.)
 #    Exact versions from uv.lock (fails if the lock is outdated), without the
@@ -446,61 +433,44 @@ CMD ["uvicorn", "main_api:app", "--host", "0.0.0.0", "--port", "31337"]
 
 ### Deploying with Fly.io using Dockerfiles
 
-We also provide two helper scripts for deploying to Fly.io, each of which copies the relevant Dockerfile into place and then invokes `fly deploy` with the correct `.toml` configuration.
+Each app has its own Fly configuration, which points to its Dockerfile with `[build] dockerfile`. Deploy them from the repository root:
 
-1. **`deploy_celery_worker.sh`**:
-   ```bash
-   #!/bin/bash
-   # -*- coding: utf-8 -*-
-
-   rm Dockerfile
-   cp Dockerfile_CELERY_WORKER Dockerfile
-
-   fly deploy -c fly_celery_worker.toml
-   ```
-
-2. **`deploy_main_api.sh`**:
-   ```bash
-   #!/bin/bash
-   # -*- coding: utf-8 -*-
-
-   rm Dockerfile
-   cp Dockerfile_MAIN_API Dockerfile
-
-   fly deploy -c fly_main_api.toml
-   ```
+```bash
+fly deploy -c fly_celery_worker.toml
+fly deploy -c fly_main_api.toml
+```
 
 - **`fly_celery_worker.toml`** is your Fly configuration for the Celery worker:
   ```toml
-  # fly_celery_worker.toml
-  app = "webscreencap-celery-worker"
-  primary_region = "eze"
+  app = 'webscreencap-celery-worker'
+  primary_region = 'iad'
 
   [build]
+    dockerfile = 'Dockerfile_CELERY_WORKER'
 
   [[vm]]
-    memory = "1gb"
-    cpu_kind = "shared"
+    memory = '1gb'
+    cpu_kind = 'shared'
     cpus = 1
   ```
 - **`fly_main_api.toml`** is your Fly configuration for the main API:
   ```toml
-  # fly_main_api.toml
-  app = "webscreencap"
-  primary_region = "eze"
+  app = 'webscreencap'
+  primary_region = 'iad'
 
   [build]
+    dockerfile = 'Dockerfile_MAIN_API'
 
   [http_service]
     internal_port = 31337
     force_https = true
-    auto_stop_machines = "stop"
+    auto_stop_machines = 'stop'
     auto_start_machines = true
     min_machines_running = 0
-    processes = ["app"]
+    processes = ['app']
 
   [[vm]]
-    size = "shared-cpu-1x"
+    size = 'shared-cpu-1x'
   ```
 
 #### Setting Environment Variables as Fly Secrets

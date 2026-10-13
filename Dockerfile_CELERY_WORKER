@@ -61,9 +61,6 @@ RUN pnpm install --frozen-lockfile
 # Install Playwright browser(s)
 RUN npx playwright install chromium
 
-# (Optional) Expose the port if Node listens on 37563
-EXPOSE 37563
-
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (Celery, etc.)
 #    Exact versions from uv.lock (fails if the lock is outdated), without the
