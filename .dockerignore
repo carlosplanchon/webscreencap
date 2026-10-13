@@ -1,3 +1,7 @@
 # node_modules is installed inside the image (see Dockerfile_CELERY_WORKER);
 # a local copy must not leak into the build context and overwrite it.
 **/node_modules
+
+# Secrets come from environment variables (Fly secrets), never from the image.
+**/.env
+**/config.toml

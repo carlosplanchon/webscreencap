@@ -44,9 +44,12 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Captured artifacts are uploaded to Tigris (or any S3-compatible storage configured via environment variables).
 
 5. **API Key Validation**  
-   Endpoints require a valid `API_KEY` for added security.
+   Endpoints require a valid `API_KEY`, sent in the `X-API-Key` header.
 
-6. **REST API**  
+6. **SSRF Protection**  
+   The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked.
+
+7. **REST API**  
    Built with **FastAPI**, offering straightforward endpoints to initiate and poll screenshot tasks.
 
 ### DeepWiki Docs: [https://deepwiki.com/carlosplanchon/webscreencap](https://deepwiki.com/carlosplanchon/webscreencap)
@@ -77,10 +80,10 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
   S3-Compatible Object Storage
 ```
 
-1. A user sends an HTTP request to the FastAPI endpoint, including the `url` and `api_key`.
-2. FastAPI validates the `api_key`, then dispatches a Celery task.
+1. A user sends a `POST` request to the FastAPI endpoint, with the `url` in a JSON body and the API key in the `X-API-Key` header.
+2. FastAPI validates the API key and the URL (only `http`/`https`), then dispatches a Celery task.
 3. The Celery worker runs the Node.js script (`scraper.js`) to:
-    - Launch a headless Chromium with stealth & ad-block.
+    - Launch a headless Chromium with stealth & ad-block, behind a local proxy (`egress_proxy.js`) that only lets it reach public addresses.
     - Capture a full-page screenshot & HTML.
     - Upload both artifacts to S3-compatible storage.
 4. Celery returns a result object containing the S3 URLs.
@@ -90,7 +93,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 
 ## Requirements
 
-- **Python** ≥ 3.8
+- **Python** ≥ 3.10
 - **Node.js** ≥ 16
 - **npm** / **pnpm** / **yarn** for installing Node dependencies
 - **Redis** (or another Celery-compatible broker) for message brokering
@@ -153,10 +156,10 @@ Configure the following environment variables **before** running the application
 | `AWS_ACCESS_KEY_ID`    | S3 access key                                                 | `yourAccessKeyId`                                   |
 | `AWS_SECRET_ACCESS_KEY`| S3 secret access key                                          | `yourSecretAccessKey`                               |
 | `BUCKET_NAME`          | S3 bucket name                                                | `screenshots-bucket`                               |
-| `CELERY_BROKER_URL`    | Celery broker URL (matching `CONFIG["celery"]["broker"]`)     | `redis://localhost:6379/0`                          |
-| `CELERY_RESULT_BACKEND`| Celery result backend (matching `CONFIG["celery"]["backend"]`) | `redis://localhost:6379/0`                          |
+| `CELERY_BROKER_URL`    | Celery broker URL                                             | `redis://localhost:6379/0`                          |
+| `CELERY_RESULT_BACKEND`| Celery result backend                                         | `redis://localhost:6379/0`                          |
 
-> **Note**: In the provided code, the Celery configuration is read from `shared.py` → `CONFIG["celery"]`. Make sure to update that file to match these environment variable values or set them in a way that the Python code reads correctly.
+> **Note**: Both the API and the Celery worker need `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`, and fail at startup if either is missing.
 
 ---
 
@@ -191,22 +194,24 @@ Now you have the API and the Celery worker up and running.
 
 ## API Reference
 
-Below are the primary endpoints. All endpoints require the `api_key` query parameter to match your environment’s `API_KEY`.
+Below are the primary endpoints. All endpoints require the `X-API-Key` header to match your environment’s `API_KEY`; otherwise they return `401`.
 
 ### 1. Initiate Screenshot Capture
 
 **Endpoint**:  
 ```
-GET /api/task/screenshot
+POST /api/task/screenshot
 ```
 
-**Query Parameters**:
-- `url`: The target URL to capture.
-- `api_key`: Your configured API key.
+**Body** (JSON):
+- `url`: The target URL to capture. Only `http` and `https` URLs are accepted; anything else returns `422`.
 
 **Example**:
 ```bash
-curl "http://127.0.0.1:31137/webscreencap/api/task/screenshot?url=https://example.com&api_key=mysecretkey"
+curl -X POST "http://127.0.0.1:31137/webscreencap/api/task/screenshot" \
+  -H "X-API-Key: mysecretkey" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
 ```
 
 **Response** (JSON):
@@ -217,6 +222,8 @@ curl "http://127.0.0.1:31137/webscreencap/api/task/screenshot?url=https://exampl
 }
 ```
 - `id` is the unique Celery task identifier.
+- If the URL points to a non-public address (localhost, a private network, a cloud metadata endpoint...), the task ends with an error result. Redirects and anything the page loads are held to the same rule.
+- Screenshots are full-page but cut at 1920×8192 px, so that very long pages don't run the worker out of memory (`MAX_SCREENSHOT_WIDTH` / `MAX_SCREENSHOT_HEIGHT` in `scraper.js`).
 
 ### 2. Get Task Details
 
@@ -228,12 +235,10 @@ GET /api/task_details/{task_id}
 **Path Parameters**:
 - `task_id`: The task ID from the previous step.
 
-**Query Parameters**:
-- `api_key`: Your configured API key.
-
 **Example**:
 ```bash
-curl "http://127.0.0.1:31137/webscreencap/api/task_details/abc123?api_key=mysecretkey"
+curl "http://127.0.0.1:31137/webscreencap/api/task_details/abc123" \
+  -H "X-API-Key: mysecretkey"
 ```
 
 **Response** (JSON):
@@ -402,8 +407,10 @@ WORKDIR /app/src
 
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the Celery worker
+#    One task at a time: each capture's Chromium takes ~450-600 MB, and in tests
+#    with the 1 GB of fly_celery_worker.toml two heavy pages at once hit the limit.
 # -----------------------------------------------------------------------------
-CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=8"]
+CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
 ```
 
 ### Dockerfile for the Main API
@@ -497,21 +504,25 @@ export AWS_REGION="..."
 export AWS_SECRET_ACCESS_KEY="..."
 export BUCKET_NAME="..."
 export API_KEY="..."
+export CELERY_BROKER_URL="..."
+export CELERY_RESULT_BACKEND="..."
 ```
 
 Then you can run:
 
 ```bash
-fly secrets set \
+fly secrets set -a webscreencap \
   AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
   AWS_ENDPOINT_URL_S3="$AWS_ENDPOINT_URL_S3" \
   AWS_REGION="$AWS_REGION" \
   AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
   BUCKET_NAME="$BUCKET_NAME" \
-  API_KEY="$API_KEY"
+  API_KEY="$API_KEY" \
+  CELERY_BROKER_URL="$CELERY_BROKER_URL" \
+  CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"
 ```
 
-Fly will store these as secrets and inject them into your application’s environment at runtime. Make sure to set them for **both** the Celery worker app and the main API app, if you’re running them separately.
+Fly will store these as secrets and inject them into your application’s environment at runtime. Run the same command with `-a webscreencap-celery-worker`, since **both** the Celery worker app and the main API app need them. Setting secrets restarts the app’s Machines; add `--stage` to apply them on the next deploy instead.
 
 ---
 

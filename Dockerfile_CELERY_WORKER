@@ -73,5 +73,7 @@ WORKDIR /app/src
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the Celery worker
 #    (You can override this later if you want to run `node` instead)
+#    One task at a time: each capture's Chromium takes ~450-600 MB, and in tests
+#    with the 1 GB of fly_celery_worker.toml two heavy pages at once hit the limit.
 # -----------------------------------------------------------------------------
-CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=8"]
+CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=1"]

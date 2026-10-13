@@ -1,0 +1,6 @@
+# Local configuration with secrets (the services read it from environment variables)
+.env
+config.toml
+
+node_modules/
+__pycache__/

@@ -4,18 +4,17 @@ from celery import Celery
 from subprocess import run, PIPE, TimeoutExpired
 import os
 import json5
-from shared import CONFIG
 
 
 # Backstop in case scraper.js hangs past its own deadline (SCRIPT_TIMEOUT_MS):
 SCRAPER_TIMEOUT = 180  # seconds
 
 
-# Initialize Celery:
+# Initialize Celery (both the API and the worker need these variables):
 celery_app = Celery(
     __name__,
-    broker=CONFIG["celery"]["broker"],
-    backend=CONFIG["celery"]["backend"],
+    broker=os.environ["CELERY_BROKER_URL"],
+    backend=os.environ["CELERY_RESULT_BACKEND"],
     broker_connection_retry_on_startup=True,
 )
 

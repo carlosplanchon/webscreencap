@@ -5,11 +5,17 @@ const stealth = require("puppeteer-extra-plugin-stealth")();
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const crypto = require("crypto");
 const randomUseragent = require("random-useragent");
+const { assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
 // Upper bound for autoScroll, so pages with infinite scroll can't keep it going forever.
 const MAX_SCROLL_MS = 60000;
 // Hard deadline for the whole run (celery_task.py kills it at SCRAPER_TIMEOUT as a backstop).
 const SCRIPT_TIMEOUT_MS = 150000;
+// Screenshots are cut at this size. Full-page captures grow with the page: a long
+// Wikipedia article alone ran the 1 GB worker out of memory, while capped at 8192 px
+// it peaked at ~600 MB. Raise it only together with the VM's memory.
+const MAX_SCREENSHOT_WIDTH = 1920;
+const MAX_SCREENSHOT_HEIGHT = 8192;
 
 // Configure S3 client
 const s3 = new S3Client({
@@ -78,8 +84,17 @@ async function autoScroll(page) {
     }, SCRIPT_TIMEOUT_MS).unref();
 
     try {
+        // Only public http(s) targets; the proxy applies the same rule to
+        // everything the page loads afterwards.
+        await assertPublicUrl(url);
+        const proxy = await startEgressProxy();
+
         chromium.use(stealth);
-        const browser = await chromium.launch({ headless: true });
+        // Playwright sends loopback through the proxy too (Chromium alone would skip it).
+        const browser = await chromium.launch({
+            headless: true,
+            proxy: { server: proxy.url }
+        });
         const context = await browser.newContext({ 
             viewport: { width: 1920, height: 1080 },
             userAgent: randomUseragent.getRandom() 
@@ -95,10 +110,15 @@ async function autoScroll(page) {
         await autoScroll(page);
 
         // Capture screenshot and HTML content
-        const screenshot = await page.screenshot({ fullPage: true });
+        // With fullPage, the clip is relative to the whole page (shorter pages are kept whole).
+        const screenshot = await page.screenshot({
+            fullPage: true,
+            clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
+        });
         const htmlContent = await page.content();
 
         await browser.close();
+        proxy.close();
 
         // Generate random hex string for filenames
         const randomHex = crypto.randomBytes(32).toString("hex");

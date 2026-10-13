@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import os
-from fastapi import FastAPI, HTTPException
+import secrets
+from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, HttpUrl
 from celery import states
 from celery.result import AsyncResult
 from celery_task import celery_app, capture_screenshot_and_html
@@ -14,6 +16,22 @@ app = FastAPI(
     root_path="/webscreencap",
     title="WebScreenCAP"
 )
+
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(api_key: str | None = Security(api_key_header)) -> None:
+    """
+    Validates the `X-API-Key` header against the `API_KEY` environment variable.
+    """
+    env_api_key = os.getenv("API_KEY")
+    # compare_digest takes the same time wherever the keys differ, so the key
+    # can't be guessed byte by byte from response times.
+    if not env_api_key or not api_key or not secrets.compare_digest(
+        api_key.encode(), env_api_key.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 # Celery reports any unknown task id as PENDING, so the ids we hand out are
@@ -34,26 +52,23 @@ class TaskInitOut(BaseModel):
 
 
 class ScreenshotRequest(BaseModel):
-    url: str
+    # Only http(s) URLs; anything else (file://, ...) gets a 422
+    url: HttpUrl
 
 
-@app.get("/api/task/screenshot", response_model=TaskInitOut)
-async def capture_screenshot_with_api_key(url: str, api_key: str):
+@app.post(
+    "/api/task/screenshot",
+    response_model=TaskInitOut,
+    dependencies=[Depends(require_api_key)],
+)
+async def capture_screenshot_with_api_key(request: ScreenshotRequest):
     """
     Endpoint to initiate a screenshot capture task.
-    Validates the api_key against a predefined environment variable `API_KEY`.
+    Requires the `X-API-Key` header.
     """
-    # Check environment variable
-    env_api_key = os.getenv("API_KEY")
-    if not env_api_key or api_key != env_api_key:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API key"
-        )
-
     try:
         # Create Celery task
-        task = capture_screenshot_and_html.delay(url)
+        task = capture_screenshot_and_html.delay(str(request.url))
         celery_app.backend.set(task_marker_key(task.id), "1")
         return TaskInitOut(
             id=task.id,
@@ -66,16 +81,16 @@ async def capture_screenshot_with_api_key(url: str, api_key: str):
         )
 
 
-@app.get("/api/task_details/{task_id}", response_class=JSONResponse)
-async def get_task_details_json(task_id: str, api_key: str):
+@app.get(
+    "/api/task_details/{task_id}",
+    response_class=JSONResponse,
+    dependencies=[Depends(require_api_key)],
+)
+async def get_task_details_json(task_id: str):
     """
     Endpoint to retrieve task details by task ID.
-    Validates the api_key against a predefined environment variable `API_KEY`.
+    Requires the `X-API-Key` header.
     """
-    env_api_key = os.getenv("API_KEY")
-    if not env_api_key or api_key != env_api_key:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
     try:
         # Look up the Celery task
         result = AsyncResult(task_id)
