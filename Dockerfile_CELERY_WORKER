@@ -61,11 +61,15 @@ EXPOSE 37563
 
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (Celery, etc.)
+#    Exact versions from uv.lock (fails if the lock is outdated), without the
+#    dev group.
 # -----------------------------------------------------------------------------
+COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 WORKDIR /app
 
-COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock .python-version /app/
+RUN UV_PYTHON_DOWNLOADS=0 uv sync --locked --no-dev --no-cache --compile-bytecode
+ENV PATH="/app/.venv/bin:$PATH"
 
 COPY src/ /app/src/
 WORKDIR /app/src

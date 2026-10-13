@@ -93,7 +93,8 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 
 ## Requirements
 
-- **Python** ≥ 3.10
+- **Python** ≥ 3.13 (uv installs it if it's missing)
+- **[uv](https://docs.astral.sh/uv/)** for Python dependencies
 - **Node.js** ≥ 16
 - **npm** / **pnpm** / **yarn** for installing Node dependencies
 - **Redis** (or another Celery-compatible broker) for message brokering
@@ -114,20 +115,10 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 2. **Install Python dependencies**:
 
    ```bash
-   pip install -r requirements.txt
+   uv sync
    ```
 
-   > The `requirements.txt` file includes:
-   > ```text
-   > fastapi
-   > fastapi_cli
-   > uvicorn
-   > celery
-   > redis
-   > flower
-   > json5
-   > ```
-   > These cover our FastAPI framework, Celery, Redis, and other libraries.
+   > This creates a `.venv` with the exact versions pinned in `uv.lock` (the dependencies are declared in `pyproject.toml`), including the `dev` group (`fastapi-cli`, `flower`), which the Docker images leave out.
 
 3. **Install Node.js dependencies**:
    - If you’re on Arch Linux (or derivative), you can leverage the `dependencies.sh` script, which installs system dependencies plus Node modules via **pnpm**.
@@ -167,10 +158,10 @@ Configure the following environment variables **before** running the application
 
 ### 1. Start the FastAPI service
 
-With uvicorn:
+From the `src/` directory, with uvicorn:
 
 ```bash
-uvicorn main_api:app --host 0.0.0.0 --port 31137
+uv run uvicorn main_api:app --host 0.0.0.0 --port 31137
 ```
 
 - `main_api:app` references your FastAPI application file/module and the `app` object within it.
@@ -179,10 +170,10 @@ uvicorn main_api:app --host 0.0.0.0 --port 31137
 
 ### 2. Start the Celery worker
 
-In another terminal:
+In another terminal, also from `src/`:
 
 ```bash
-celery -A celery_task.celery_app worker --loglevel=info
+uv run celery -A celery_task.celery_app worker --loglevel=info
 ```
 
 Where:
@@ -260,10 +251,10 @@ curl "http://127.0.0.1:31137/webscreencap/api/task_details/abc123" \
 
 ## Running the Celery Worker
 
-The Celery worker is defined in **`celery_task.py`**:
+The Celery worker is defined in **`celery_task.py`** (run it from `src/`):
 
 ```bash
-celery -A celery_task.celery_app worker --loglevel=info
+uv run celery -A celery_task.celery_app worker --loglevel=info
 ```
 
 - **`celery_task.celery_app`** references the Celery app object.
@@ -307,23 +298,16 @@ You can adapt this script for other package managers / distributions as needed.
 
 ### Python Dependencies
 
-Our `requirements.txt` includes the following:
-
-```
-fastapi
-fastapi_cli
-uvicorn
-celery
-redis
-flower
-json5
-```
-
-Install them via:
+Python dependencies are declared in `pyproject.toml` and pinned in `uv.lock`, both managed with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-pip install -r requirements.txt
+uv sync                  # install everything, including the dev group
+uv add <package>         # add a dependency (updates pyproject.toml and uv.lock)
+uv add --dev <package>   # add a tool that's only needed locally
+uv lock --upgrade        # upgrade the pinned versions
 ```
+
+The `dev` group (`fastapi-cli`, `flower`) is only for local use: the Docker images install the rest with `uv sync --locked --no-dev`, which fails if `uv.lock` is out of date with `pyproject.toml`.
 
 ---
 
@@ -396,11 +380,15 @@ EXPOSE 37563
 
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (Celery, etc.)
+#    Exact versions from uv.lock (fails if the lock is outdated), without the
+#    dev group.
 # -----------------------------------------------------------------------------
+COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 WORKDIR /app
 
-COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock .python-version /app/
+RUN UV_PYTHON_DOWNLOADS=0 uv sync --locked --no-dev --no-cache --compile-bytecode
+ENV PATH="/app/.venv/bin:$PATH"
 
 COPY src/ /app/src/
 WORKDIR /app/src
@@ -419,13 +407,16 @@ CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--c
 
 ```dockerfile
 FROM python:3.13.2-slim
+COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY src/ /app/src/
-COPY requirements.txt /app/
+# Exact versions from uv.lock (fails if the lock is outdated), without the dev group
+COPY pyproject.toml uv.lock .python-version /app/
+RUN UV_PYTHON_DOWNLOADS=0 uv sync --locked --no-dev --no-cache --compile-bytecode
+ENV PATH="/app/.venv/bin:$PATH"
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY src/ /app/src/
 
 EXPOSE 31337
 

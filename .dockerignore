@@ -2,6 +2,9 @@
 # a local copy must not leak into the build context and overwrite it.
 **/node_modules
 
+# Same for the Python environment (uv sync creates it inside the image).
+**/.venv
+
 # Secrets come from environment variables (Fly secrets), never from the image.
 **/.env
 **/config.toml
