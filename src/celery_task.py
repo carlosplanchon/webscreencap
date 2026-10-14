@@ -68,4 +68,6 @@ def capture_screenshot_and_html(self, url):
         "message": "Screenshot and HTML processed successfully",
         "screenshot_url": result["screenshotUrl"],
         "html_url": result["htmlUrl"],
+        "http_status": result.get("httpStatus"),
+        "final_url": result.get("finalUrl"),
     }

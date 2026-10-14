@@ -99,9 +99,9 @@ async function autoScroll(page) {
     }, { maxScrollMs: MAX_SCROLL_MS, maxHeight: MAX_SCREENSHOT_HEIGHT });
 }
 
-// Counts the main frame's navigations and keeps the error of the last failed one
+// Counts the main frame's navigations and keeps the last response and error
 function trackNavigations(page) {
-    const navigations = { started: 0, committed: Promise.resolve(), failure: null };
+    const navigations = { started: 0, committed: Promise.resolve(), response: null, failure: null };
     const isMainFrameNavigation = (request) => {
         try {
             return request.isNavigationRequest() && request.frame() === page.mainFrame();
@@ -116,6 +116,11 @@ function trackNavigations(page) {
                 predicate: (frame) => frame === page.mainFrame(),
                 timeout: NAVIGATION_TIMEOUT_MS,
             }).catch(() => {});
+        }
+    });
+    page.on("response", (response) => {
+        if (isMainFrameNavigation(response.request())) {
+            navigations.response = response;
         }
     });
     page.on("requestfailed", (request) => {
@@ -184,6 +189,7 @@ async function capturePage(page, navigations) {
         // Playwright sends loopback through the proxy too
         const browser = await chromium.launch({
             headless: true,
+            chromiumSandbox: true,
             proxy: { server: proxy.url }
         });
         // No userAgent: the stealth plugin sets one that matches the browser
@@ -205,6 +211,8 @@ async function capturePage(page, navigations) {
         if (page.url().startsWith("chrome-error://")) {
             throw new Error(navigations.failure || "The page navigated to an address that couldn't be loaded");
         }
+        const httpStatus = navigations.response ? navigations.response.status() : null;
+        const finalUrl = page.url();
 
         await browser.close();
         proxy.close();
@@ -219,7 +227,9 @@ async function capturePage(page, navigations) {
 
         console.log(JSON.stringify({
             screenshotUrl: await fileUrl(screenshotFileName),
-            htmlUrl: await fileUrl(htmlFileName)
+            htmlUrl: await fileUrl(htmlFileName),
+            httpStatus,
+            finalUrl
         }));
     } catch (error) {
         // Only the first line: Playwright appends its call log below it

@@ -1,8 +1,11 @@
-"""Captures: page loading, size cap, fonts, encoding, the file URL settings and ad blocking."""
+"""Captures: page loading, size cap, fonts, encoding, the file URL settings, ad blocking and the sandbox."""
+import os
 import subprocess
+import time
 import unittest
 
-from helpers import INTERNAL, SITE, SITE_CONTROL, fixture_stats, http, new_token, png_size, run_scraper
+from helpers import (INTERNAL, SCRAPER, SITE, SITE_CONTROL, fixture_stats, http, new_token, png_size, processes,
+                     run_scraper)
 
 
 class CaptureTest(unittest.TestCase):
@@ -32,6 +35,36 @@ class CaptureTest(unittest.TestCase):
         code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=300&to={target}")
         self.assertEqual(code, 1, result)
         self.assertIn(f"ERR_TUNNEL_CONNECTION_FAILED at {target}", result["error"])
+
+    def test_http_status_and_final_url(self):
+        for path, status, final_path in (
+            ("/missing", 404, "/missing"),
+            ("/redirect?to=/landed", 200, "/landed"),
+            ("/js-redirect?ms=300", 200, "/landed"),
+        ):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                self.assertEqual((result["httpStatus"], result["finalUrl"]), (status, SITE + final_path))
+
+    def test_chromium_runs_with_its_sandbox(self):
+        self.assertNotEqual(os.getuid(), 0)
+        scraper = subprocess.Popen(["node", SCRAPER, SITE + "/hanging-image"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 20
+            while not any("--type=renderer" in args for _, args in processes()):
+                self.assertLess(time.time(), deadline, "no renderer started")
+                time.sleep(0.2)
+            running = processes()
+            browser = next(pid for pid, args in running if "--remote-debugging-pipe" in args and "--type=" not in args)
+            renderer = next(pid for pid, args in running if "--type=renderer" in args)
+            self.assertFalse(any("--no-sandbox" in args for _, args in running))
+            # The renderer runs in a user namespace of its own
+            self.assertNotEqual(os.readlink(f"/proc/{browser}/ns/user"), os.readlink(f"/proc/{renderer}/ns/user"))
+        finally:
+            scraper.kill()
+            scraper.wait()
 
     def test_screenshots_are_cut_at_8192_px(self):
         for height, expected in ((20000, 8192), (500, 1080)):

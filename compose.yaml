@@ -60,6 +60,8 @@ services:
     environment: *env
     # Reaps Chromium's leftover processes, like Fly's init
     init: true
+    # Lets Chromium create the user namespaces of its sandbox
+    security_opt: ["seccomp=seccomp_profile.json"]
     depends_on:
       redis:
         condition: service_started

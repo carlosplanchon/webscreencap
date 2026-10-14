@@ -95,6 +95,18 @@ def png_size(data):
     return struct.unpack(">II", data[16:24])
 
 
+def processes():
+    """(pid, command line) of every process in this container."""
+    found = []
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                found.append((pid, f.read().replace(b"\0", b" ").decode(errors="replace")))
+        except OSError:
+            pass
+    return found
+
+
 class LoopbackListener:
     """A server on 127.0.0.1 that counts the connections it gets."""
 

@@ -55,6 +55,7 @@ COPY src/package*.json src/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Install Playwright's browser, only its headless shell
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx playwright install --only-shell chromium
 
 # -----------------------------------------------------------------------------
@@ -79,4 +80,7 @@ RUN node adblocker.js
 #    (You can override this later if you want to run `node` instead)
 #    One task at a time, so Chromium fits in the VM's memory.
 # -----------------------------------------------------------------------------
+# Without root, so Chromium runs with its sandbox
+RUN useradd --create-home pwuser
+USER pwuser
 CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=1"]

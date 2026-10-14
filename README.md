@@ -53,7 +53,10 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 6. **SSRF Protection**  
    The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked.
 
-7. **REST API**  
+7. **Sandboxed Browser**  
+   The worker runs as a non-root user, so Chromium keeps its sandbox (see [Dockerization](#dockerization)).
+
+8. **REST API**  
    Built with **FastAPI**, offering straightforward endpoints to initiate and poll screenshot tasks.
 
 ### DeepWiki Docs: [https://deepwiki.com/carlosplanchon/webscreencap](https://deepwiki.com/carlosplanchon/webscreencap)
@@ -159,6 +162,13 @@ Configure the following environment variables **before** running the application
 
 **File URLs**: by default, the worker returns presigned URLs, which work even if the bucket is private and expire after `PRESIGNED_URL_EXPIRES_IN` seconds (by default 1 day, as long as Celery keeps the task result). If the bucket is public, set `FILE_URL_MODE=public` and `PUBLIC_FILE_BASE_URL` to get permanent URLs (`<PUBLIC_FILE_BASE_URL>/<file>`); on Tigris, public files are served from `https://<bucket>.t3.tigrisfiles.io`. These three variables only matter to the worker.
 
+With presigned URLs, the files are of no use once their URLs expire, but they stay in the bucket. An expiration rule deletes them; for instance, after 2 days (longer than the URLs last, unless you raise `PRESIGNED_URL_EXPIRES_IN`):
+
+```bash
+aws s3api put-bucket-lifecycle-configuration --endpoint-url https://t3.storage.dev --bucket <bucket> \
+  --lifecycle-configuration '{"Rules": [{"ID": "expire-captures", "Status": "Enabled", "Filter": {"Prefix": ""}, "Expiration": {"Days": 2}}]}'
+```
+
 ---
 
 ## Usage
@@ -249,10 +259,13 @@ curl "http://127.0.0.1:31337/webscreencap/api/task_details/abc123" \
     "status": "success",
     "message": "Screenshot and HTML processed successfully",
     "screenshot_url": "https://screenshots-bucket.<S3-endpoint>/screenshot-<timestamp>-<hash>.png?X-Amz-Algorithm=...&X-Amz-Signature=...",
-    "html_url": "https://screenshots-bucket.<S3-endpoint>/page-<timestamp>-<hash>.html?X-Amz-Algorithm=...&X-Amz-Signature=..."
+    "html_url": "https://screenshots-bucket.<S3-endpoint>/page-<timestamp>-<hash>.html?X-Amz-Algorithm=...&X-Amz-Signature=...",
+    "http_status": 200,
+    "final_url": "https://example.com/"
   }
 }
 ```
+- `http_status` is the HTTP status of the captured page, and `final_url` its address after redirects, including the ones the page makes by itself. Error pages (`404`, `500`...) are captured too, so check `http_status`.
 - While the task waits or runs, `status` is `PENDING` and `result` is `null`.
 - If the capture fails, `status` is `FAILURE` and `result.message` says why; the details stay in the worker logs:
   ```json
@@ -354,7 +367,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results and the format of failures.
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets and so on, while public addresses still load.
-- **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect by themselves, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the file URL settings, and that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`).
+- **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect by themselves, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL, the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chromium runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 
@@ -363,6 +376,8 @@ They only use the standard libraries (`unittest` and `node:test`), so they need 
 ## Dockerization
 
 We provide two separate Dockerfiles to handle the **Celery worker** and the **Main API** separately. This allows you to deploy them as separate services/containers.
+
+The worker runs as `pwuser`, so Chromium can keep its sandbox. Docker's default seccomp profile doesn't let it create the user namespaces the sandbox needs, so the worker's containers use `seccomp_profile.json`: Docker's default profile plus the user namespace rule from [Playwright's docs](https://playwright.dev/docs/docker). The compose files already pass it; with `docker run`, add `--security-opt seccomp=seccomp_profile.json`. Fly runs the image as a VM instead of a Docker container, so the profile doesn't apply there.
 
 ### Dockerfile for the Celery Worker
 
@@ -426,6 +441,7 @@ COPY src/package*.json src/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Install Playwright's browser, only its headless shell
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx playwright install --only-shell chromium
 
 # -----------------------------------------------------------------------------
@@ -450,6 +466,9 @@ RUN node adblocker.js
 #    (You can override this later if you want to run `node` instead)
 #    One task at a time, so Chromium fits in the VM's memory.
 # -----------------------------------------------------------------------------
+# Without root, so Chromium runs with its sandbox
+RUN useradd --create-home pwuser
+USER pwuser
 CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
 ```
 

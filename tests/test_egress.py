@@ -38,6 +38,7 @@ class EgressTest(unittest.TestCase):
         code, result, _, _ = run_scraper(f"{SITE}/redirect?to={INTERNAL}/secret")
         self.assertEqual(code, 0, result)
         # The capture shows the proxy's answer instead of the internal page
+        self.assertEqual(result["httpStatus"], 403)
         _, _, html = http("GET", result["htmlUrl"])
         self.assertIn(b"Blocked:", html)
         self.assertNotIn(b"INTERNAL-SECRET", html)

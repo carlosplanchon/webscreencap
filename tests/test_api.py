@@ -42,6 +42,7 @@ class ApiTest(unittest.TestCase):
         details = wait_for_task(submit(SITE + "/landed"))
         self.assertEqual(details["status"], "SUCCESS", details)
         result = details["result"]
+        self.assertEqual((result["http_status"], result["final_url"]), (200, SITE + "/landed"))
 
         status, headers, png = http("GET", result["screenshot_url"])
         self.assertEqual((status, headers["Content-Type"]), (200, "image/png"))

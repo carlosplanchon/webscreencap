@@ -57,6 +57,7 @@ services:
     build: *worker-build
     environment: *env
     init: true
+    security_opt: ["seccomp=seccomp_profile.json"]
     networks: [default, public]
     depends_on:
       redis:
@@ -89,6 +90,7 @@ services:
     volumes:
       - ./tests:/app/tests:ro
     init: true
+    security_opt: ["seccomp=seccomp_profile.json"]
     networks: [default, public]
     working_dir: /app/tests
     command: ["python", "-m", "unittest", "discover", "-v"]

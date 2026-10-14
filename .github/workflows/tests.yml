@@ -23,5 +23,9 @@ jobs:
         with:
           persist-credentials: false
 
+      # Ubuntu 24.04 may keep Chromium's sandbox from creating user namespaces
+      - name: Allow user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Run the tests
         run: tests/run.sh

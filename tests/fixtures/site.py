@@ -66,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         if url.path == "/landed":
             return self._send(200, "<h1>LANDED</h1>")
+        if url.path == "/missing":
+            return self._send(404, "<h1>missing</h1>")
         if url.path == "/redirect":
             return self._send(302, "", {"Location": query["to"][0]})
         if url.path == "/mechanisms":
