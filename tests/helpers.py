@@ -1,6 +1,7 @@
 """Shared helpers for the tests, which run inside the test stack (compose.test.yaml)."""
 import json
 import os
+import socket
 import struct
 import subprocess
 import threading
@@ -62,7 +63,7 @@ def wait_for_task(task_id, timeout=180):
     deadline = time.time() + timeout
     while time.time() < deadline:
         _, body = api("GET", f"/task_details/{task_id}")
-        if body and body.get("status") in ("SUCCESS", "FAILURE", "REVOKED"):
+        if body and body.get("status") in ("SUCCESS", "FAILURE"):
             return body
         time.sleep(1)
     raise AssertionError(f"task {task_id} didn't finish in {timeout} s")
@@ -93,6 +94,14 @@ def new_token():
 def png_size(data):
     """(width, height) of a PNG, from its header."""
     return struct.unpack(">II", data[16:24])
+
+
+def drop_redis_connections():
+    """Makes Redis close every client connection, as a restart does."""
+    url = urllib.parse.urlsplit(os.environ["REDIS_URL"])
+    with socket.create_connection((url.hostname, url.port or 6379), timeout=10) as connection:
+        connection.sendall(b"CLIENT KILL TYPE normal\r\n")
+        return connection.recv(64)
 
 
 def processes():

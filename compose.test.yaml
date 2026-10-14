@@ -3,8 +3,7 @@ name: webscreencap-tests
 
 x-env: &env
   API_KEY: test-key
-  CELERY_BROKER_URL: redis://redis:6379/0
-  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  REDIS_URL: redis://redis:6379/0
   AWS_REGION: us-east-1
   AWS_ENDPOINT_URL_S3: http://10.250.251.10:5000
   AWS_ACCESS_KEY_ID: test
@@ -13,11 +12,15 @@ x-env: &env
 
 x-worker-build: &worker-build
   context: .
-  dockerfile: Dockerfile_CELERY_WORKER
+  dockerfile: Dockerfile_WORKER
 
 services:
   redis:
     image: redis:7.4.11-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      retries: 30
 
   s3:
     image: motoserver/moto:5.2.3
@@ -51,7 +54,9 @@ services:
       context: .
       dockerfile: Dockerfile_MAIN_API
     environment: *env
-    depends_on: [redis]
+    depends_on:
+      redis:
+        condition: service_healthy
 
   worker:
     build: *worker-build
@@ -61,7 +66,7 @@ services:
     networks: [default, public]
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       s3-bucket:
         condition: service_completed_successfully
 

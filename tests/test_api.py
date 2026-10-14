@@ -1,7 +1,8 @@
-"""The API end to end: authentication, validation, results and failures."""
+"""The API end to end: authentication, validation, results, failures and Redis reconnections."""
 import unittest
 
-from helpers import API_KEY, API_URL, INTERNAL, SITE, api, http, submit, wait_for_api, wait_for_task
+from helpers import (API_KEY, API_URL, INTERNAL, SITE, api, drop_redis_connections, http, submit, wait_for_api,
+                     wait_for_task)
 
 
 class ApiTest(unittest.TestCase):
@@ -29,8 +30,11 @@ class ApiTest(unittest.TestCase):
                 self.assertEqual(status, 422)
 
     def test_unknown_task_is_404(self):
-        status, _ = api("GET", "/task_details/no-such-task")
-        self.assertEqual(status, 404)
+        # "taskiq" is also the name of the queue's key in Redis
+        for task_id in ("no-such-task", "taskiq"):
+            with self.subTest(task_id=task_id):
+                status, _ = api("GET", f"/task_details/{task_id}")
+                self.assertEqual(status, 404)
 
     def test_task_is_pending_until_it_finishes(self):
         task_id = submit(SITE + "/landed")
@@ -60,6 +64,12 @@ class ApiTest(unittest.TestCase):
         # No stack traces, call logs or paths inside the container
         self.assertNotIn("\n", message)
         self.assertNotIn("/app/", message)
+
+    def test_survives_dropped_redis_connections(self):
+        self.assertEqual(wait_for_task(submit(SITE + "/landed"))["status"], "SUCCESS")
+        self.assertTrue(drop_redis_connections().startswith(b":"))
+        details = wait_for_task(submit(SITE + "/landed"))
+        self.assertEqual(details["status"], "SUCCESS", details)
 
 
 if __name__ == "__main__":

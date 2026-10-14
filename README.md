@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml/badge.svg)](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml)
 
-A microservice that captures screenshots and HTML content from URLs asynchronously using **FastAPI** and **Celery**, leveraging **Node.js** with **Playwright** (and stealth/extra plugins) behind the scenes. Captured artifacts (screenshots, HTML) are uploaded to an S3-compatible storage (e.g., Tigris, MinIO, AWS S3).
+A microservice that captures screenshots and HTML content from URLs asynchronously using **FastAPI** and **TaskIQ**, leveraging **Node.js** with **Playwright** (and stealth/extra plugins) behind the scenes. Captured artifacts (screenshots, HTML) are uploaded to an S3-compatible storage (e.g., Tigris, MinIO, AWS S3).
 
 ---
 
@@ -17,14 +17,14 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 - [API Reference](#api-reference)
   - [1. Initiate Screenshot Capture](#1-initiate-screenshot-capture)
   - [2. Get Task Details](#2-get-task-details)
-- [Running the Celery Worker](#running-the-celery-worker)
+- [Running the Worker](#running-the-worker)
 - [Local Development](#local-development)
   - [Running Everything with Docker Compose](#running-everything-with-docker-compose)
   - [Installing Dependencies with `dependencies.sh`](#installing-dependencies-with-dependenciessh)
   - [Python Dependencies](#python-dependencies)
 - [Tests](#tests)
 - [Dockerization](#dockerization)
-  - [Dockerfile for the Celery Worker](#dockerfile-for-the-celery-worker)
+  - [Dockerfile for the Worker](#dockerfile-for-the-worker)
   - [Dockerfile for the Main API](#dockerfile-for-the-main-api)
   - [Deploying with Fly.io using Dockerfiles](#deploying-with-flyio-using-dockerfiles)
     - [Setting Environment Variables as Fly Secrets](#setting-environment-variables-as-fly-secrets)
@@ -36,7 +36,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 ## Features
 
 1. **Async Screenshot & HTML Capture**  
-   Offload screenshot tasks to Celery for asynchronous processing.
+   Offload screenshot tasks to a TaskIQ worker for asynchronous processing.
 
 2. **Playwright/Stealth Integration**  
    Uses [playwright-extra](https://www.npmjs.com/package/playwright-extra) plus stealth plugins to reduce detection.
@@ -73,7 +73,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 └───────┬────────────┘
         │ (HTTP request)
 ┌───────┴──────────────────────────────────────────────┐
-│  Celery Worker                                       │
+│  TaskIQ Worker                                       │
 │ capture_screenshot_and_html → Invokes Node.js script │
 └───────┬──────────────────────────────────────────────┘
         │
@@ -88,12 +88,12 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 ```
 
 1. A user sends a `POST` request to the FastAPI endpoint, with the `url` in a JSON body and the API key in the `X-API-Key` header.
-2. FastAPI validates the API key and the URL (only `http`/`https`), then dispatches a Celery task.
-3. The Celery worker runs the Node.js script (`scraper.js`) to:
+2. FastAPI validates the API key and the URL (only `http`/`https`), then queues a TaskIQ task in Redis.
+3. The TaskIQ worker runs the Node.js script (`scraper.js`) to:
     - Launch a headless Chromium with stealth & ad-block, behind a local proxy (`egress_proxy.js`) that only lets it reach public addresses.
     - Capture a full-page screenshot & HTML.
     - Upload both artifacts to S3-compatible storage.
-4. Celery returns a result object containing the S3 URLs.
+4. The worker stores a result with the file URLs in Redis.
 5. The user can retrieve the task status (and result) via another endpoint.
 
 ---
@@ -104,7 +104,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 - **[uv](https://docs.astral.sh/uv/)** for Python dependencies
 - **Node.js** 22 or later (the worker image uses 24)
 - **npm** / **pnpm** / **yarn** for installing Node dependencies
-- **Redis** (or another Celery-compatible broker) for message brokering
+- **Redis** 6.2 or later, for the task queue and the results
 - **S3-Compatible Object Storage** (e.g., Tigris, MinIO, AWS S3) credentials
 - Additional system dependencies needed for Playwright (detailed below)
 
@@ -125,7 +125,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    uv sync
    ```
 
-   > This creates a `.venv` with the exact versions pinned in `uv.lock` (the dependencies are declared in `pyproject.toml`), including the `dev` group (`fastapi-cli`, `flower`), which the Docker images leave out.
+   > This creates a `.venv` with the exact versions pinned in `uv.lock` (the dependencies are declared in `pyproject.toml`), including the `dev` group (`fastapi-cli`), which the Docker images leave out.
 
 3. **Install Node.js dependencies**:
    - If you’re on Arch Linux (or derivative), you can leverage the `src/dependencies.sh` script, which installs system dependencies plus Node modules via **pnpm**.
@@ -136,7 +136,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
      pnpm playwright install chromium
      ```
 
-4. **Set up or ensure you have a running Celery broker** (e.g., Redis, RabbitMQ).
+4. **Set up or ensure you have a running Redis**.
 
 ---
 
@@ -152,15 +152,14 @@ Configure the following environment variables **before** running the application
 | `AWS_ACCESS_KEY_ID`    | S3 access key                                                 | `yourAccessKeyId`                                   |
 | `AWS_SECRET_ACCESS_KEY`| S3 secret access key                                          | `yourSecretAccessKey`                               |
 | `BUCKET_NAME`          | S3 bucket name                                                | `screenshots-bucket`                               |
-| `CELERY_BROKER_URL`    | Celery broker URL                                             | `redis://localhost:6379/0`                          |
-| `CELERY_RESULT_BACKEND`| Celery result backend                                         | `redis://localhost:6379/0`                          |
+| `REDIS_URL`            | Redis for the task queue and the results                      | `redis://localhost:6379/0`                          |
 | `FILE_URL_MODE`        | How the returned file URLs are built: `presigned` (default) or `public` | `presigned`                              |
 | `PRESIGNED_URL_EXPIRES_IN` | Lifetime of presigned URLs, in seconds (up to 604800, 7 days) | `86400` (default, 1 day)                 |
 | `PUBLIC_FILE_BASE_URL` | Base of the URLs in `public` mode (required there)            | `https://screenshots-bucket.t3.tigrisfiles.io`      |
 
-> **Note**: Both the API and the Celery worker need `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`, and fail at startup if either is missing.
+> **Note**: Both the API and the worker need `REDIS_URL`, and fail at startup if it's missing or Redis doesn't answer.
 
-**File URLs**: by default, the worker returns presigned URLs, which work even if the bucket is private and expire after `PRESIGNED_URL_EXPIRES_IN` seconds (by default 1 day, as long as Celery keeps the task result). If the bucket is public, set `FILE_URL_MODE=public` and `PUBLIC_FILE_BASE_URL` to get permanent URLs (`<PUBLIC_FILE_BASE_URL>/<file>`); on Tigris, public files are served from `https://<bucket>.t3.tigrisfiles.io`. These three variables only matter to the worker.
+**File URLs**: by default, the worker returns presigned URLs, which work even if the bucket is private and expire after `PRESIGNED_URL_EXPIRES_IN` seconds (by default 1 day, as long as the task result is kept). If the bucket is public, set `FILE_URL_MODE=public` and `PUBLIC_FILE_BASE_URL` to get permanent URLs (`<PUBLIC_FILE_BASE_URL>/<file>`); on Tigris, public files are served from `https://<bucket>.t3.tigrisfiles.io`. These three variables only matter to the worker.
 
 With presigned URLs, the files are of no use once their URLs expire, but they stay in the bucket. An expiration rule deletes them; for instance, after 2 days (longer than the URLs last, unless you raise `PRESIGNED_URL_EXPIRES_IN`):
 
@@ -185,18 +184,18 @@ uv run uvicorn main_api:app --host 0.0.0.0 --port 31337
 - The example config in the code uses `if __name__ == "__main__": uvicorn.run(app, ... )` to start the server.  
 - Adjust host/port as necessary.
 
-### 2. Start the Celery worker
+### 2. Start the worker
 
 In another terminal, also from `src/`:
 
 ```bash
-uv run celery -A celery_task.celery_app worker --loglevel=info
+uv run taskiq worker tasks:broker --workers 1 --max-async-tasks 1
 ```
 
 Where:
-- `-A celery_task.celery_app` matches the Celery app instance in your `celery_task.py`.
+- `tasks:broker` is the TaskIQ broker in `tasks.py`, and the options keep it to one capture at a time.
 
-Now you have the API and the Celery worker up and running.
+Now you have the API and the worker up and running.
 
 ---
 
@@ -225,11 +224,11 @@ curl -X POST "http://127.0.0.1:31337/webscreencap/api/task/screenshot" \
 **Response** (JSON):
 ```json
 {
-  "id": "<celery_task_id>",
+  "id": "<task_id>",
   "message": "Task started successfully"
 }
 ```
-- `id` is the unique Celery task identifier.
+- `id` is the task identifier.
 - If the URL points to a non-public address (localhost, a private network, a cloud metadata endpoint...), the task fails. Redirects and anything the page loads are held to the same rule.
 - Screenshots are full-page but cut at 1920×8192 px, so that very long pages don't run the worker out of memory (`MAX_SCREENSHOT_WIDTH` / `MAX_SCREENSHOT_HEIGHT` in `scraper.js`).
 - The page is captured once it loads, or after 10 s if some of its resources never finish loading. Redirects the page makes by itself (JavaScript, meta refresh) are followed, up to 5; if one leads to an address that can't be loaded, the task fails.
@@ -278,20 +277,22 @@ curl "http://127.0.0.1:31337/webscreencap/api/task_details/abc123" \
     }
   }
   ```
-- Returns `404` if the task id is unknown or its result has already expired (Celery keeps results for 1 day by default).
+- Returns `404` if the task id is unknown or its result has already expired (results are kept for 1 day).
 
 ---
 
-## Running the Celery Worker
+## Running the Worker
 
-The Celery worker is defined in **`celery_task.py`** (run it from `src/`):
+The worker is defined in **`tasks.py`** (run it from `src/`):
 
 ```bash
-uv run celery -A celery_task.celery_app worker --loglevel=info
+uv run taskiq worker tasks:broker --workers 1 --max-async-tasks 1
 ```
 
-- **`celery_task.celery_app`** references the Celery app object.
+- **`tasks:broker`** references the TaskIQ broker, which uses a Redis stream.
 - Make sure your environment variables are set so the Node.js script can access them.
+- When it's told to stop, it finishes the capture in progress first.
+- If it dies in the middle of a capture, the capture is retried once, 5 minutes later, when the next task arrives; if it's cut short again, it fails.
 
 ---
 
@@ -302,7 +303,7 @@ For local development:
 1. **Clone** this repository.
 2. **Install** dependencies as described or use the included scripts.
 3. Configure environment variables or set up a `.env` file.  
-4. **Run** the FastAPI server and Celery worker.
+4. **Run** the FastAPI server and the worker.
 5. **Test** with cURL or a REST client (Postman, Insomnia, etc.).
 
 ### Running Everything with Docker Compose
@@ -350,7 +351,7 @@ uv add --dev <package>   # add a tool that's only needed locally
 uv lock --upgrade        # upgrade the pinned versions
 ```
 
-The `dev` group (`fastapi-cli`, `flower`) is only for local use: the Docker images install the rest with `uv sync --locked --no-dev`, which fails if `uv.lock` is out of date with `pyproject.toml`.
+The `dev` group (`fastapi-cli`) is only for local use: the Docker images install the rest with `uv sync --locked --no-dev`, which fails if `uv.lock` is out of date with `pyproject.toml`.
 
 ---
 
@@ -365,7 +366,7 @@ tests/run.sh -k redirect   # only the tests whose name matches
 
 Besides the service itself, that stack has a "public" test website and an internal service that browsers must never reach. The tests cover:
 
-- **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results and the format of failures.
+- **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets and so on, while public addresses still load.
 - **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect by themselves, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL, the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chromium runs without root and with its sandbox.
 
@@ -375,13 +376,13 @@ They only use the standard libraries (`unittest` and `node:test`), so they need 
 
 ## Dockerization
 
-We provide two separate Dockerfiles to handle the **Celery worker** and the **Main API** separately. This allows you to deploy them as separate services/containers.
+We provide two separate Dockerfiles to handle the **worker** and the **Main API** separately. This allows you to deploy them as separate services/containers.
 
 The worker runs as `pwuser`, so Chromium can keep its sandbox. Docker's default seccomp profile doesn't let it create the user namespaces the sandbox needs, so the worker's containers use `seccomp_profile.json`: Docker's default profile plus the user namespace rule from [Playwright's docs](https://playwright.dev/docs/docker). The compose files already pass it; with `docker run`, add `--security-opt seccomp=seccomp_profile.json`. Fly runs the image as a VM instead of a Docker container, so the profile doesn't apply there.
 
-### Dockerfile for the Celery Worker
+### Dockerfile for the Worker
 
-**`Dockerfile_CELERY_WORKER`**:
+**`Dockerfile_WORKER`**:
 
 ```dockerfile
 # -----------------------------------------------------------------------------
@@ -445,7 +446,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx playwright install --only-shell chromium
 
 # -----------------------------------------------------------------------------
-# 6) Install Python application dependencies (Celery, etc.)
+# 6) Install Python application dependencies (TaskIQ, etc.)
 #    Exact versions from uv.lock, without the dev group.
 # -----------------------------------------------------------------------------
 COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
@@ -462,14 +463,14 @@ WORKDIR /app/src
 RUN node adblocker.js
 
 # -----------------------------------------------------------------------------
-# 7) Default CMD: Start the Celery worker
+# 7) Default CMD: Start the TaskIQ worker
 #    (You can override this later if you want to run `node` instead)
 #    One task at a time, so Chromium fits in the VM's memory.
 # -----------------------------------------------------------------------------
 # Without root, so Chromium runs with its sandbox
 RUN useradd --create-home pwuser
 USER pwuser
-CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
+CMD ["taskiq", "worker", "tasks:broker", "--workers", "1", "--max-async-tasks", "1"]
 ```
 
 ### Dockerfile for the Main API
@@ -501,18 +502,18 @@ CMD ["uvicorn", "main_api:app", "--host", "0.0.0.0", "--port", "31337"]
 Each app has its own Fly configuration, which points to its Dockerfile with `[build] dockerfile`. Deploy them from the repository root:
 
 ```bash
-fly deploy -c fly_celery_worker.toml
+fly deploy -c fly_worker.toml
 fly deploy -c fly_main_api.toml
 ```
 
-- **`fly_celery_worker.toml`** is your Fly configuration for the Celery worker. Fly waits `kill_timeout` seconds before killing a machine it stops (on deploys, for instance). The default of 5 s would lose the capture in progress, so the worker gets 200 s, longer than a capture can take:
+- **`fly_worker.toml`** is your Fly configuration for the worker (its Fly app is still called `webscreencap-celery-worker`). Fly waits `kill_timeout` seconds before killing a machine it stops (on deploys, for instance). The default of 5 s would lose the capture in progress, so the worker gets 200 s, longer than a capture can take:
   ```toml
   app = 'webscreencap-celery-worker'
   primary_region = 'iad'
   kill_timeout = 200
 
   [build]
-    dockerfile = 'Dockerfile_CELERY_WORKER'
+    dockerfile = 'Dockerfile_WORKER'
 
   [[vm]]
     memory = '1gb'
@@ -550,8 +551,7 @@ export AWS_REGION="..."
 export AWS_SECRET_ACCESS_KEY="..."
 export BUCKET_NAME="..."
 export API_KEY="..."
-export CELERY_BROKER_URL="..."
-export CELERY_RESULT_BACKEND="..."
+export REDIS_URL="..."
 ```
 
 Then you can run:
@@ -564,13 +564,12 @@ fly secrets set -a webscreencap \
   AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
   BUCKET_NAME="$BUCKET_NAME" \
   API_KEY="$API_KEY" \
-  CELERY_BROKER_URL="$CELERY_BROKER_URL" \
-  CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"
+  REDIS_URL="$REDIS_URL"
 ```
 
-Fly will store these as secrets and inject them into your application’s environment at runtime. Run the same command with `-a webscreencap-celery-worker`, since **both** the Celery worker app and the main API app need them. Setting secrets restarts the app’s Machines; add `--stage` to apply them on the next deploy instead.
+Fly will store these as secrets and inject them into your application’s environment at runtime. Run the same command with `-a webscreencap-celery-worker`, since **both** the worker app and the main API app need them. Setting secrets restarts the app’s Machines; add `--stage` to apply them on the next deploy instead.
 
-The file URL settings aren't secret, so they can go in an `[env]` section of `fly_celery_worker.toml` instead (only needed to change the defaults):
+The file URL settings aren't secret, so they can go in an `[env]` section of `fly_worker.toml` instead (only needed to change the defaults):
 
 ```toml
 [env]

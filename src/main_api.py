@@ -2,19 +2,28 @@
 
 import os
 import secrets
+from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, HttpUrl
-from celery import states
-from celery.result import AsyncResult
-from celery_task import ScrapeError, celery_app, capture_screenshot_and_html
+from taskiq_redis.exceptions import ResultIsMissingError
+from tasks import RESULT_TTL, ScrapeError, broker, capture_screenshot_and_html, redis
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await broker.startup()
+    yield
+    await broker.shutdown()
+    await redis.aclose()
 
 
 # FastAPI Setup:
 app = FastAPI(
     root_path="/webscreencap",
-    title="WebScreenCAP"
+    title="WebScreenCAP",
+    lifespan=lifespan,
 )
 
 
@@ -33,7 +42,7 @@ def require_api_key(api_key: str | None = Security(api_key_header)) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-# Celery reports unknown ids as PENDING, so the ones handed out are remembered
+# Unknown ids have no result either, so the ones handed out are remembered
 def task_marker_key(task_id: str) -> str:
     return f"webscreencap-task-{task_id}"
 
@@ -49,23 +58,22 @@ class ScreenshotRequest(BaseModel):
     url: HttpUrl
 
 
-# Plain def: they block on Redis, so FastAPI runs them in its threadpool
 @app.post(
     "/api/task/screenshot",
     response_model=TaskInitOut,
     dependencies=[Depends(require_api_key)],
 )
-def capture_screenshot_with_api_key(request: ScreenshotRequest):
+async def capture_screenshot_with_api_key(request: ScreenshotRequest):
     """
     Endpoint to initiate a screenshot capture task.
     Requires the `X-API-Key` header.
     """
     try:
-        # Create Celery task
-        task = capture_screenshot_and_html.delay(str(request.url))
-        celery_app.backend.set(task_marker_key(task.id), "1")
+        # Create the task
+        task = await capture_screenshot_and_html.kiq(str(request.url))
+        await redis.set(task_marker_key(task.task_id), "1", ex=RESULT_TTL)
         return TaskInitOut(
-            id=task.id,
+            id=task.task_id,
             message="Task started successfully"
         )
     except Exception as e:
@@ -80,25 +88,22 @@ def capture_screenshot_with_api_key(request: ScreenshotRequest):
     response_class=JSONResponse,
     dependencies=[Depends(require_api_key)],
 )
-def get_task_details_json(task_id: str):
+async def get_task_details_json(task_id: str):
     """
     Endpoint to retrieve task details by task ID.
     Requires the `X-API-Key` header.
     """
     try:
-        # Look up the Celery task
-        result = AsyncResult(task_id)
+        # Look up the task's result
+        result = None
+        if await broker.result_backend.is_result_ready(task_id):
+            try:
+                result = await broker.result_backend.get_result(task_id)
+            except ResultIsMissingError:
+                pass  # expired in between
 
-        # Current status
-        status = result.status
-        # Only show result if it's complete (successful or failure)
-        output = result.result if result.ready() else None
-
-        # Unknown (or expired) ids also come back as PENDING
-        not_found = (
-            status == states.PENDING
-            and celery_app.backend.get(task_marker_key(task_id)) is None
-        )
+        # Unknown (or expired) ids have neither a result nor a marker
+        not_found = result is None and not await redis.exists(task_marker_key(task_id))
 
     except Exception as e:
         raise HTTPException(
@@ -112,12 +117,17 @@ def get_task_details_json(task_id: str):
             detail="Task not found"
         )
 
+    if result is None:
+        status, output = "PENDING", None
     # Only capture errors are meant for clients
-    if isinstance(output, BaseException):
+    elif result.is_err:
+        status = "FAILURE"
         output = {
             "status": "error",
-            "message": str(output) if isinstance(output, ScrapeError) else "Task failed",
+            "message": str(result.error) if isinstance(result.error, ScrapeError) else "Task failed",
         }
+    else:
+        status, output = "SUCCESS", result.return_value
 
     return JSONResponse(
         {
