@@ -5,6 +5,7 @@
 
 app = 'webscreencap-celery-worker'
 primary_region = 'iad'
+kill_timeout = 200
 
 [build]
   dockerfile = 'Dockerfile_CELERY_WORKER'

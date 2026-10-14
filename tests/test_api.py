@@ -48,7 +48,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
 
         status, headers, html = http("GET", result["html_url"])
-        self.assertEqual((status, headers["Content-Type"]), (200, "text/html"))
+        self.assertEqual((status, headers["Content-Type"]), (200, "text/html; charset=utf-8"))
         self.assertIn(b"LANDED", html)
 
     def test_failed_capture_is_a_failure_with_a_short_message(self):

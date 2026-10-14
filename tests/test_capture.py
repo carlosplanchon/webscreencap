@@ -1,4 +1,4 @@
-"""Captures: page loading, size cap, fonts and the file URL settings."""
+"""Captures: page loading, size cap, fonts, encoding, the file URL settings and ad blocking."""
 import subprocess
 import unittest
 
@@ -19,6 +19,24 @@ class CaptureTest(unittest.TestCase):
                 self.assertEqual(code, 0, result)
                 _, _, png = http("GET", result["screenshotUrl"])
                 self.assertEqual(png_size(png), (1920, expected))
+
+    def test_scrolling_stops_at_the_screenshot_height(self):
+        code, result, _, seconds = run_scraper(f"{SITE}/tall?height=30000")
+        self.assertEqual(code, 0, result)
+        self.assertLess(seconds, 40)
+
+    def test_html_is_saved_as_utf8(self):
+        code, result, _, _ = run_scraper(SITE + "/latin1")
+        self.assertEqual(code, 0, result)
+        _, headers, html = http("GET", result["htmlUrl"])
+        self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn("Año, señal, café".encode(), html)
+
+    def test_failed_adblock_list_downloads_fail(self):
+        process = subprocess.run(
+            ["node", "--test", "/app/tests/adblocker.test.js"], capture_output=True, text=True,
+        )
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
 
     def test_fonts_for_non_latin_scripts(self):
         for lang in ("ja", "zh-cn", "ko", "ar", "he", "hi", "th"):

@@ -86,7 +86,7 @@ function fail(message, details) {
 }
 
 async function autoScroll(page) {
-    await page.evaluate(async (maxScrollMs) => {
+    await page.evaluate(async ({ maxScrollMs, maxHeight }) => {
         await new Promise((resolve) => {
             var totalHeight = 0;
             var distance = 1000; // Scroll distance per step
@@ -96,14 +96,14 @@ async function autoScroll(page) {
                 window.scrollBy(0, distance);
                 totalHeight += distance;
   
-                // Stop at the bottom, or after maxScrollMs if the page keeps growing.
-                if(totalHeight >= scrollHeight || Date.now() - startTime >= maxScrollMs){
+                // Stop at the bottom or at the screenshot's height, or after maxScrollMs.
+                if(totalHeight >= Math.min(scrollHeight, maxHeight) || Date.now() - startTime >= maxScrollMs){
                     clearInterval(timer);
                     resolve();
                 }
             }, 2000); // Interval between scrolls
         });
-    }, MAX_SCROLL_MS);
+    }, { maxScrollMs: MAX_SCROLL_MS, maxHeight: MAX_SCREENSHOT_HEIGHT });
 }
 
 (async () => {
@@ -172,7 +172,7 @@ async function autoScroll(page) {
         const htmlFileName = `page-${Date.now()}-${randomHex}.html`;
 
         await uploadToTigris(bucketName, screenshotFileName, screenshot, "image/png");
-        await uploadToTigris(bucketName, htmlFileName, htmlContent, "text/html");
+        await uploadToTigris(bucketName, htmlFileName, htmlContent, "text/html; charset=utf-8");
 
         console.log(JSON.stringify({
             screenshotUrl: await fileUrl(screenshotFileName),

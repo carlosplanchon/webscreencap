@@ -10,9 +10,20 @@ const { fetch } = require("cross-fetch");
 
 const CACHE_PATH = path.join(__dirname, "adblocker-engine.bin");
 
-function loadBlocker() {
-    return PlaywrightBlocker.fromPrebuiltAdsAndTracking(fetch, {
-        path: CACHE_PATH,
+// The adblocker would parse an error page as a filter list
+function checkedFetch(fetchImpl) {
+    return async (url) => {
+        const response = await fetchImpl(url);
+        if (!response.ok) {
+            throw new Error(`Failed to download ${url}: HTTP ${response.status}`);
+        }
+        return response;
+    };
+}
+
+function loadBlocker(fetchImpl = fetch, cachePath = CACHE_PATH) {
+    return PlaywrightBlocker.fromPrebuiltAdsAndTracking(checkedFetch(fetchImpl), {
+        path: cachePath,
         read: fs.readFile,
         write: fs.writeFile,
     });

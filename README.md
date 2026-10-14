@@ -42,7 +42,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Uses [playwright-extra](https://www.npmjs.com/package/playwright-extra) plus stealth plugins to reduce detection.
 
 3. **Ad-blocking**  
-   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. The filter lists are downloaded and parsed when the worker image is built.
+   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. The filter lists are downloaded and parsed when the worker image is built (the build fails if any of them can't be downloaded).
 
 4. **S3-Compatible Upload**  
    Captured artifacts are uploaded to Tigris (or any S3-compatible storage configured via environment variables).
@@ -112,7 +112,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 1. **Clone the repository**:
 
    ```bash
-   git clone https://github.com/example/webscreencap.git
+   git clone https://github.com/carlosplanchon/webscreencap.git
    cd webscreencap
    ```
 
@@ -342,7 +342,7 @@ The `dev` group (`fastapi-cli`, `flower`) is only for local use: the Docker imag
 
 ## Tests
 
-`tests/run.sh` runs the test suite in a throwaway Docker Compose stack (`compose.test.yaml`) and removes the stack afterwards:
+`tests/run.sh` runs the test suite in a throwaway Docker Compose stack (`compose.test.yaml`) and removes the stack afterwards; if a test fails, it prints the API and worker logs first:
 
 ```bash
 tests/run.sh               # everything
@@ -353,7 +353,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results and the format of failures.
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets and so on, while public addresses still load.
-- **Captures**: pages that never stop making requests, the 1920×8192 px cap, the fonts for non-Latin scripts and the file URL settings.
+- **Captures**: pages that never stop making requests, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the file URL settings, and that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`).
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 
@@ -488,10 +488,11 @@ fly deploy -c fly_celery_worker.toml
 fly deploy -c fly_main_api.toml
 ```
 
-- **`fly_celery_worker.toml`** is your Fly configuration for the Celery worker:
+- **`fly_celery_worker.toml`** is your Fly configuration for the Celery worker. Fly waits `kill_timeout` seconds before killing a machine it stops (on deploys, for instance). The default of 5 s would lose the capture in progress, so the worker gets 200 s, longer than a capture can take:
   ```toml
   app = 'webscreencap-celery-worker'
   primary_region = 'iad'
+  kill_timeout = 200
 
   [build]
     dockerfile = 'Dockerfile_CELERY_WORKER'

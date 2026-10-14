@@ -8,5 +8,8 @@ compose=(docker compose -f compose.test.yaml)
 "${compose[@]}" build || exit 1
 "${compose[@]}" run --rm --quiet-pull tests python -m unittest discover -v "$@"
 status=$?
+if [ "$status" -ne 0 ]; then
+    "${compose[@]}" logs --no-color api worker
+fi
 "${compose[@]}" down
 exit "$status"

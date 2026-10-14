@@ -53,10 +53,10 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             stats["connections"] += 1
 
-    def _send(self, code, body, headers=None):
-        data = body.encode()
+    def _send(self, code, body, headers=None, encoding="utf-8"):
+        data = body.encode(encoding)
         self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", f"text/html; charset={encoding}")
         self.send_header("Content-Length", str(len(data)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)
@@ -86,6 +86,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/tall":
             height = int(query["height"][0])
             return self._send(200, f'<div style="height: {height}px; background: linear-gradient(red, blue)"></div>')
+        if url.path == "/latin1":
+            return self._send(200, '<meta charset="iso-8859-1"><p>Año, señal, café</p>', encoding="iso-8859-1")
         return self._send(200, "<h1>public ok</h1>")
 
     do_POST = do_GET
