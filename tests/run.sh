@@ -1,6 +1,5 @@
 #!/bin/bash
-# Runs the tests in a throwaway Docker Compose stack (compose.test.yaml) and removes
-# the stack afterwards. Extra arguments go to unittest, e.g. `tests/run.sh -k redirect`.
+# Extra arguments go to unittest, e.g. tests/run.sh -k redirect
 set -u
 cd "$(dirname "$0")/.."
 

@@ -1,8 +1,4 @@
-# Local development stack: the API and the worker, with Redis and a local S3 (moto)
-# instead of Tigris. Start it with `docker compose up --build`; the API answers on
-# http://127.0.0.1:31337/webscreencap/api with the key "local-dev-key".
-# Files go to moto's in-memory bucket, and their URLs point to 10.250.250.10:5000,
-# which a Linux host can reach directly.
+# Local stack, with Redis and moto instead of Tigris
 name: webscreencap
 
 x-env: &env
@@ -10,8 +6,7 @@ x-env: &env
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/1
   AWS_REGION: us-east-1
-  # An IP, not a host name: with a name, the S3 SDK puts the bucket in the host
-  # name (virtual-hosted style), which would need DNS for it
+  # An IP, so the S3 SDK doesn't put the bucket in the host name
   AWS_ENDPOINT_URL_S3: http://10.250.250.10:5000
   AWS_ACCESS_KEY_ID: local
   AWS_SECRET_ACCESS_KEY: local
@@ -27,7 +22,7 @@ services:
       default:
         ipv4_address: 10.250.250.10
 
-  # Creates the bucket once moto is up (it starts empty)
+  # Creates the bucket once moto is up
   s3-bucket:
     image: python:3.13.16-slim-bookworm
     command:
@@ -63,7 +58,7 @@ services:
       context: .
       dockerfile: Dockerfile_CELERY_WORKER
     environment: *env
-    # Reaps Chromium's leftover processes, as Fly's own init does in production
+    # Reaps Chromium's leftover processes, like Fly's init
     init: true
     depends_on:
       redis:

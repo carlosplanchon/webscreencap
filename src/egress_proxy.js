@@ -1,11 +1,4 @@
-// Local HTTP proxy that Chromium is launched behind, so that everything a page
-// loads (redirects, subresources, iframes, workers, WebSockets, popups) can only
-// reach public addresses. page.route() can't do this: it isn't called for
-// redirects or for requests handled by service workers.
-//
-// The proxy resolves each host itself and connects to the same addresses it
-// checked, so a DNS answer that changes in between (DNS rebinding) can't sneak
-// a private address in.
+// Proxy for Chromium that only lets pages reach public addresses
 
 const dns = require("dns");
 const http = require("http");
@@ -63,8 +56,7 @@ function nonPublicError(host, address) {
     return error;
 }
 
-// URL hostnames keep IPv6 literals in brackets; sockets take them bare. Sockets
-// skip the lookup for IP literals, so those are checked here instead.
+// Sockets skip the lookup for IP literals, so those are checked here
 function checkedHost(hostname) {
     const host = hostname.replace(/^\[(.*)\]$/, "$1");
     if (net.isIP(host) && !isPublicAddress(host)) {
@@ -73,8 +65,7 @@ function checkedHost(hostname) {
     return host;
 }
 
-// Drop-in for dns.lookup that fails unless every address of the host is public
-// (with mixed records, the connection could end up on the private one).
+// dns.lookup that fails unless every address of the host is public
 function publicLookup(hostname, options, callback) {
     dns.lookup(hostname, { ...options, all: true }, (error, addresses) => {
         if (error) {
@@ -91,8 +82,7 @@ function publicLookup(hostname, options, callback) {
     });
 }
 
-// Rejects URLs that Chromium shouldn't even try, with a clearer error than a
-// failed page load.
+// Rejects URLs before Chromium tries them, with a clearer error
 async function assertPublicUrl(url) {
     const { protocol, hostname } = new URL(url);
     if (protocol !== "http:" && protocol !== "https:") {
@@ -126,8 +116,7 @@ function errorStatus(error) {
     return error.code === "ENONPUBLIC" ? 403 : 502;
 }
 
-// Starts the proxy on a random local port. Returns its URL and a close() that
-// also tears down open tunnels, so they can't keep the process alive.
+// close() also tears down open tunnels, so they can't keep the process alive
 function startEgressProxy() {
     const sockets = new Set();
     const track = (socket) => {

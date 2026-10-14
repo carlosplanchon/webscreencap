@@ -1,10 +1,4 @@
-# Test stack, used by tests/run.sh (which also removes it afterwards).
-# The same services as compose.yaml, on other subnets and without published ports,
-# so both stacks can run at once, plus:
-#  - site: a "public" website for the tests. Its network uses addresses outside the
-#    private ranges (11.250.0.0/24), so the worker's egress proxy treats it as public.
-#  - internal: stands in for an internal service that browsers must never reach.
-#  - tests: the test runner, built like the worker (same browser, Node and Python).
+# Test stack for tests/run.sh
 name: webscreencap-tests
 
 x-env: &env
@@ -115,6 +109,7 @@ networks:
     ipam:
       config:
         - subnet: 10.250.251.0/24
+  # Outside the private ranges, so the egress proxy treats it as public
   public:
     ipam:
       config:

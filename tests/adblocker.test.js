@@ -1,4 +1,4 @@
-// Downloads of the ad-blocking lists (src/adblocker.js), run with `node --test`.
+// Downloads of the ad-blocking lists, run with `node --test`
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");

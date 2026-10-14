@@ -6,8 +6,7 @@ import unittest
 from helpers import (INTERNAL, INTERNAL_CONTROL, SITE, SITE_CONTROL, LoopbackListener, fixture_stats,
                      http, new_token, run_scraper)
 
-# The ways tests/fixtures/site.py's /mechanisms page loads a URL, except window.open():
-# pages can't open popups (see scraper.js)
+# What the /mechanisms page loads, except the popup: pages can't open them
 MECHANISMS = {"prefetch", "css", "img", "iframe", "fetch", "xhr", "worker", "ws", "eventsource", "beacon"}
 
 
@@ -57,7 +56,7 @@ class EgressTest(unittest.TestCase):
             ):
                 with self.subTest(target=target):
                     code, result, _, _ = run_scraper(f"{SITE}/mechanisms?target={target}&token={new_token()}")
-                    # The page still loads (blocked requests used to hang it with an iframe and a popup)
+                    # The page still loads
                     self.assertEqual(code, 0, result)
             self.assertEqual(loopback.connections, 0)
         self.assertEqual(fixture_stats(INTERNAL_CONTROL)["connections"], before)

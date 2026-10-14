@@ -69,10 +69,7 @@ def wait_for_task(task_id, timeout=180):
 
 
 def run_scraper(url, env=None, timeout=200):
-    """Runs scraper.js the way the worker does.
-
-    Returns (exit code, its JSON result, stderr, seconds it took).
-    """
+    """Runs scraper.js like the worker; returns (exit code, JSON result, stderr, seconds)."""
     start = time.time()
     process = subprocess.run(
         ["node", SCRAPER, url], capture_output=True, text=True, timeout=timeout,

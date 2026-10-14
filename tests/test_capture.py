@@ -7,7 +7,7 @@ from helpers import INTERNAL, SITE, SITE_CONTROL, fixture_stats, http, new_token
 
 class CaptureTest(unittest.TestCase):
     def test_page_with_constant_traffic_loads(self):
-        # It never goes network-idle, which used to make it fail after 60 s
+        # It never goes network-idle
         code, result, _, seconds = run_scraper(SITE + "/polling")
         self.assertEqual(code, 0, result)
         self.assertLess(seconds, 45)

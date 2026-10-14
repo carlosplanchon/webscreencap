@@ -1,7 +1,4 @@
-// Ad and tracker blocking with Ghostery's prebuilt lists. The parsed engine is
-// cached on disk: the worker image builds the cache (`node adblocker.js`, see
-// Dockerfile_CELERY_WORKER), so captures don't download the lists every time.
-// If the cache is missing or can't be loaded, the lists are fetched and it's rewritten.
+// The parsed lists are cached on disk; the worker image builds the cache
 
 const fs = require("fs/promises");
 const path = require("path");

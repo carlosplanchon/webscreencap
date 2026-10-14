@@ -18,7 +18,7 @@ class ApiTest(unittest.TestCase):
                 self.assertEqual(status, 401)
 
     def test_old_style_requests_are_rejected(self):
-        # GET with the key in the query string, as before
+        # GET with the key in the query string
         status, _, _ = http("GET", f"{API_URL}/task/screenshot?url={SITE}/landed&api_key={API_KEY}")
         self.assertEqual(status, 405)
 
@@ -56,7 +56,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(details["status"], "FAILURE", details)
         message = details["result"]["message"]
         self.assertIn("is not a public address", message)
-        # Neither stack traces or call logs, nor paths inside the container
+        # No stack traces, call logs or paths inside the container
         self.assertNotIn("\n", message)
         self.assertNotIn("/app/", message)
 

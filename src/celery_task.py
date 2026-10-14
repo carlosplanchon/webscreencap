@@ -7,7 +7,7 @@ import json
 import os
 
 
-# Backstop in case scraper.js hangs past its own deadline (SCRIPT_TIMEOUT_MS):
+# In case scraper.js hangs past its own deadline
 SCRAPER_TIMEOUT = 180  # seconds
 
 logger = get_task_logger(__name__)
@@ -36,8 +36,7 @@ def read_result(stdout):
     return result if isinstance(result, dict) else {}
 
 
-# A ScrapeError is an expected outcome: the task still ends as FAILURE, but the
-# worker logs it as INFO, without a traceback.
+# Expected failures: logged as INFO, without a traceback
 @celery_app.task(bind=True, throws=(ScrapeError,))
 def capture_screenshot_and_html(self, url):
     script_path = os.path.join(os.path.dirname(__file__), "scraper.js")

@@ -376,8 +376,6 @@ FROM python:3.13.16-slim-bookworm
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Playwright, etc.
-#    The Noto fonts cover what Liberation doesn't (CJK, Arabic, Devanagari,
-#    Thai, emoji...), which otherwise shows up as boxes in the screenshots.
 # -----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     curl \
@@ -406,34 +404,33 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
-# 3) Install Node.js 24 (LTS; Playwright needs 22 or later)
+# 3) Install Node.js 24
 # -----------------------------------------------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs
 
 # -----------------------------------------------------------------------------
-# 4) Install pnpm globally (pinned, so builds don't pick up a new major by surprise)
+# 4) Install pnpm globally
 # -----------------------------------------------------------------------------
 RUN npm install -g pnpm@12.11.2
 
 # -----------------------------------------------------------------------------
 # 5) Install Node application dependencies (Playwright, etc.)
-#    They go in /app/src, next to scraper.js: Celery runs /app/src/scraper.js and
-#    Node resolves modules relative to the script's directory.
+#    NOTE: Since your package.json and pnpm-lock.yaml are in src/, COPY them from there.
 # -----------------------------------------------------------------------------
 WORKDIR /app/src
 
+# Copy Node dependency manifests from src/
 COPY src/package*.json src/pnpm-lock.yaml ./
+
 RUN pnpm install --frozen-lockfile
 
-# Install Playwright's browser: only Chromium's headless shell, since scraper.js
-# always runs headless (the full Chromium is only needed for headed runs)
+# Install Playwright's browser, only its headless shell
 RUN npx playwright install --only-shell chromium
 
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (Celery, etc.)
-#    Exact versions from uv.lock (fails if the lock is outdated), without the
-#    dev group.
+#    Exact versions from uv.lock, without the dev group.
 # -----------------------------------------------------------------------------
 COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 WORKDIR /app
@@ -445,13 +442,13 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY src/ /app/src/
 WORKDIR /app/src
 
-# Download and parse the ad-blocking lists once, here, instead of in every capture
+# Build the ad-blocking cache
 RUN node adblocker.js
 
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the Celery worker
-#    One task at a time: each capture's Chromium takes ~500-700 MB, and in tests
-#    with the 1 GB of fly_celery_worker.toml two heavy pages at once hit the limit.
+#    (You can override this later if you want to run `node` instead)
+#    One task at a time, so Chromium fits in the VM's memory.
 # -----------------------------------------------------------------------------
 CMD ["celery", "-A", "celery_task.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
 ```
@@ -466,7 +463,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 
 WORKDIR /app
 
-# Exact versions from uv.lock (fails if the lock is outdated), without the dev group
+# Exact versions from uv.lock, without the dev group
 COPY pyproject.toml uv.lock .python-version /app/
 RUN UV_PYTHON_DOWNLOADS=0 uv sync --locked --no-dev --no-cache --compile-bytecode
 ENV PATH="/app/.venv/bin:$PATH"

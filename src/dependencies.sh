@@ -1,6 +1,5 @@
 #!/bin/bash
-# Local setup on Arch Linux: system packages for Node.js and Playwright's
-# Chromium, then the Node dependencies exactly as pinned in pnpm-lock.yaml.
+# Local setup on Arch Linux
 cd "$(dirname "$0")"
 
 sudo pacman -S nodejs npm pnpm --noconfirm --needed

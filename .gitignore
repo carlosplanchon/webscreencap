@@ -1,9 +1,9 @@
-# Local configuration with secrets (the services read it from environment variables)
+# Local configuration with secrets
 .env
 config.toml
 
 .venv/
 node_modules/
 __pycache__/
-# Built by src/adblocker.js
+# Ad-blocking cache
 adblocker-engine.bin

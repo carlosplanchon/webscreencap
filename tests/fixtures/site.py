@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""Fixture web server for the tests (see compose.test.yaml).
+"""Test website: site.py public|internal [port] [control port]
 
-usage: site.py public|internal [port] [control port]
-
-public:   a "public" website with test pages (redirects, a page that loads URLs in
-          every way a browser can, a page that never stops making requests...)
-internal: stands in for an internal service; the browser must never reach it
-
-Both count every connection and request they get. The test runner reads those
-numbers on the control port, which isn't counted.
+The control port reports the connections and requests the site got.
 """
 import json
 import sys
@@ -24,8 +17,7 @@ CONTROL_PORT = int(sys.argv[3]) if len(sys.argv) > 3 else 8081
 lock = threading.Lock()
 stats = {"connections": 0, "requests": []}
 
-# Every way a page can make the browser load a URL. {t} is the target, {k} a token
-# that tells this page's requests apart from other tests'.
+# Every way a page can load a URL; {t} is the target and {k} a per-test token
 MECHANISMS = """<!doctype html>
 <html><head><title>mechanisms</title>
 <link rel="prefetch" href="{t}/m/{k}/prefetch">

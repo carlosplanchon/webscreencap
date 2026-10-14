@@ -7,23 +7,16 @@ const util = require("util");
 const { loadBlocker } = require("./adblocker");
 const { assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
-// For the page's first response, and for the pages it navigates to by itself.
 const NAVIGATION_TIMEOUT_MS = 60000;
-// How long to wait for the "load" event before capturing anyway (a resource may never finish).
+// After this, the page is captured even if some resource never finished loading
 const LOAD_TIMEOUT_MS = 10000;
-// How many of the redirects the page makes by itself (JavaScript, meta refresh) are followed.
+// Redirects the page makes by itself (JavaScript, meta refresh) that are followed
 const MAX_NAVIGATIONS = 5;
-// After the page's "load" event, how long to wait at most for the network to go quiet.
-// Waiting for "networkidle" alone (discouraged by Playwright) never ends on pages with
-// constant traffic (analytics, chats, polling), so those hit the 60 s timeout.
+// Longest wait for the network to go quiet after "load"
 const NETWORK_SETTLE_MS = 5000;
-// Upper bound for autoScroll, so pages with infinite scroll can't keep it going forever.
 const MAX_SCROLL_MS = 60000;
-// Hard deadline for the whole run (celery_task.py kills it at SCRAPER_TIMEOUT as a backstop).
 const SCRIPT_TIMEOUT_MS = 150000;
-// Screenshots are cut at this size. Full-page captures grow with the page: a long
-// Wikipedia article alone ran the 1 GB worker out of memory, while capped at 8192 px
-// it peaked at ~700 MB. Raise it only together with the VM's memory.
+// Raise them only together with the VM's memory
 const MAX_SCREENSHOT_WIDTH = 1920;
 const MAX_SCREENSHOT_HEIGHT = 8192;
 
@@ -54,11 +47,7 @@ async function uploadToTigris(bucketName, fileName, fileContent, contentType) {
     }
 }
 
-// How the file URLs in the result are built (FILE_URL_MODE):
-//  - "presigned" (default): signed URLs, so the bucket can stay private. They expire
-//    after PRESIGNED_URL_EXPIRES_IN seconds (default: 1 day, like the task result).
-//  - "public": PUBLIC_FILE_BASE_URL followed by the file name, for public buckets
-//    (on Tigris, https://<bucket>.t3.tigrisfiles.io).
+// Presigned file URLs by default, or public ones (FILE_URL_MODE)
 function fileUrlBuilder(bucketName) {
     const mode = process.env.FILE_URL_MODE || "presigned";
     if (mode === "public") {
@@ -81,11 +70,9 @@ function fileUrlBuilder(bucketName) {
     throw new Error(`FILE_URL_MODE must be "presigned" or "public", got "${mode}"`);
 }
 
-// celery_task.py reads the result from stdout: one JSON line with the file URLs,
-// or with an error message short enough to show to API clients. The details
-// (stack traces, Playwright call logs) go to stderr and only reach the worker logs.
+// The message is for API clients; the details only reach the worker logs
 function fail(message, details) {
-    // process.exit() can cut off output that's still being written, so wait for both.
+    // process.exit() could cut off what's still being written
     process.stderr.write(`${details}\n`, () => {
         process.stdout.write(`${JSON.stringify({ error: message })}\n`, () => process.exit(1));
     });
@@ -112,8 +99,7 @@ async function autoScroll(page) {
     }, { maxScrollMs: MAX_SCROLL_MS, maxHeight: MAX_SCREENSHOT_HEIGHT });
 }
 
-// Counts the navigations of the main frame (server redirects are part of each one)
-// and keeps the error of the last one that failed.
+// Counts the main frame's navigations and keeps the error of the last failed one
 function trackNavigations(page) {
     const navigations = { started: 0, committed: Promise.resolve(), failure: null };
     const isMainFrameNavigation = (request) => {
@@ -140,8 +126,7 @@ function trackNavigations(page) {
     return navigations;
 }
 
-// Waits for the page and captures it. If the page navigates by itself in the meantime,
-// it starts over on the new page.
+// If the page navigates by itself in the meantime, it starts over on the new one
 async function capturePage(page, navigations) {
     for (let i = 0; ; i++) {
         const started = navigations.started;
@@ -156,7 +141,7 @@ async function capturePage(page, navigations) {
 
         try {
             await autoScroll(page);
-            // With fullPage, the clip is relative to the whole page (shorter pages are kept whole).
+            // With fullPage, the clip is relative to the whole page
             const screenshot = await page.screenshot({
                 fullPage: true,
                 clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
@@ -181,7 +166,7 @@ async function capturePage(page, navigations) {
 
     const url = args[0];
 
-    // unref() so the timer doesn't keep the process alive after a successful run.
+    // unref() so it doesn't keep the process alive
     setTimeout(() => {
         fail("Timed out while processing the URL", `Timed out after ${SCRIPT_TIMEOUT_MS} ms.`);
     }, SCRIPT_TIMEOUT_MS).unref();
@@ -191,25 +176,21 @@ async function capturePage(page, navigations) {
         const bucketName = process.env.BUCKET_NAME;
         const fileUrl = fileUrlBuilder(bucketName);
 
-        // Only public http(s) targets; the proxy applies the same rule to
-        // everything the page loads afterwards.
+        // Only public http(s) targets, as the proxy does for everything the page loads
         await assertPublicUrl(url);
         const proxy = await startEgressProxy();
 
         chromium.use(stealth);
-        // Playwright sends loopback through the proxy too (Chromium alone would skip it).
+        // Playwright sends loopback through the proxy too
         const browser = await chromium.launch({
             headless: true,
             proxy: { server: proxy.url }
         });
-        // No userAgent here: the stealth plugin sets a current desktop Chrome one,
-        // matching the engine that renders the page.
+        // No userAgent: the stealth plugin sets one that matches the browser
         const context = await browser.newContext({
             viewport: { width: 1920, height: 1080 }
         });
-        // No popups, as in a regular browser without a click. A capture has no use for
-        // them, and with Playwright 1.64 and the adblocker, a popup plus an iframe to a
-        // blocked address kept the page from ever finishing loading.
+        // No popups, as in a regular browser without a click
         await context.addInitScript(() => { window.open = () => null; });
         const page = await context.newPage();
 
@@ -241,7 +222,7 @@ async function capturePage(page, navigations) {
             htmlUrl: await fileUrl(htmlFileName)
         }));
     } catch (error) {
-        // Only the first line of the message: Playwright appends its call log below it.
+        // Only the first line: Playwright appends its call log below it
         const message = String(error?.message ?? error).split("\n")[0];
         fail(message, util.format("Error processing screenshot:", error));
     }

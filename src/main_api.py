@@ -26,16 +26,14 @@ def require_api_key(api_key: str | None = Security(api_key_header)) -> None:
     Validates the `X-API-Key` header against the `API_KEY` environment variable.
     """
     env_api_key = os.getenv("API_KEY")
-    # compare_digest takes the same time wherever the keys differ, so the key
-    # can't be guessed byte by byte from response times.
+    # Constant time, so the key can't be guessed from response times
     if not env_api_key or not api_key or not secrets.compare_digest(
         api_key.encode(), env_api_key.encode()
     ):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-# Celery reports any unknown task id as PENDING, so the ids we hand out are
-# remembered (with the same TTL as the results) to tell "queued" from "not found".
+# Celery reports unknown ids as PENDING, so the ones handed out are remembered
 def task_marker_key(task_id: str) -> str:
     return f"webscreencap-task-{task_id}"
 
@@ -51,8 +49,7 @@ class ScreenshotRequest(BaseModel):
     url: HttpUrl
 
 
-# The endpoints are plain `def`: they block on Redis, so FastAPI runs them in its
-# threadpool instead of on the event loop.
+# Plain def: they block on Redis, so FastAPI runs them in its threadpool
 @app.post(
     "/api/task/screenshot",
     response_model=TaskInitOut,
@@ -115,8 +112,7 @@ def get_task_details_json(task_id: str):
             detail="Task not found"
         )
 
-    # Failed or revoked tasks hold an exception. Only capture errors are meant for
-    # clients; anything else stays in the worker logs.
+    # Only capture errors are meant for clients
     if isinstance(output, BaseException):
         output = {
             "status": "error",

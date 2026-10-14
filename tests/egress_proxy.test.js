@@ -1,4 +1,4 @@
-// Address policy of the egress proxy (src/egress_proxy.js), run with `node --test`.
+// Address policy of the egress proxy, run with `node --test`
 const test = require("node:test");
 const assert = require("node:assert");
 const { isPublicAddress, assertPublicUrl } = require("../src/egress_proxy.js");
