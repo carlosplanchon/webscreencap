@@ -1,0 +1,29 @@
+# Runs the test suite (tests/run.sh, see "Tests" in the README) on pushes to main,
+# on pull requests and on demand.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request cancels the run in progress
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false  # the tests don't need git credentials
+
+      - name: Run the tests
+        run: tests/run.sh

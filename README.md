@@ -1,5 +1,7 @@
 # WebScreenCAP
 
+[![Tests](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml/badge.svg)](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml)
+
 A microservice that captures screenshots and HTML content from URLs asynchronously using **FastAPI** and **Celery**, leveraging **Node.js** with **Playwright** (and stealth/extra plugins) behind the scenes. Captured artifacts (screenshots, HTML) are uploaded to an S3-compatible storage (e.g., Tigris, MinIO, AWS S3).
 
 ---
@@ -353,7 +355,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets and so on, while public addresses still load.
 - **Captures**: pages that never stop making requests, the 1920×8192 px cap, the fonts for non-Latin scripts and the file URL settings.
 
-They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies.
+They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 
 ---
 
