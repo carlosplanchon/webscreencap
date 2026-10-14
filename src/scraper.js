@@ -7,6 +7,12 @@ const util = require("util");
 const { loadBlocker } = require("./adblocker");
 const { assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
+// For the page's first response, and for the pages it navigates to by itself.
+const NAVIGATION_TIMEOUT_MS = 60000;
+// How long to wait for the "load" event before capturing anyway (a resource may never finish).
+const LOAD_TIMEOUT_MS = 10000;
+// How many of the redirects the page makes by itself (JavaScript, meta refresh) are followed.
+const MAX_NAVIGATIONS = 5;
 // After the page's "load" event, how long to wait at most for the network to go quiet.
 // Waiting for "networkidle" alone (discouraged by Playwright) never ends on pages with
 // constant traffic (analytics, chats, polling), so those hit the 60 s timeout.
@@ -106,6 +112,67 @@ async function autoScroll(page) {
     }, { maxScrollMs: MAX_SCROLL_MS, maxHeight: MAX_SCREENSHOT_HEIGHT });
 }
 
+// Counts the navigations of the main frame (server redirects are part of each one)
+// and keeps the error of the last one that failed.
+function trackNavigations(page) {
+    const navigations = { started: 0, committed: Promise.resolve(), failure: null };
+    const isMainFrameNavigation = (request) => {
+        try {
+            return request.isNavigationRequest() && request.frame() === page.mainFrame();
+        } catch {
+            return false;
+        }
+    };
+    page.on("request", (request) => {
+        if (isMainFrameNavigation(request) && !request.redirectedFrom()) {
+            navigations.started++;
+            navigations.committed = page.waitForEvent("framenavigated", {
+                predicate: (frame) => frame === page.mainFrame(),
+                timeout: NAVIGATION_TIMEOUT_MS,
+            }).catch(() => {});
+        }
+    });
+    page.on("requestfailed", (request) => {
+        if (isMainFrameNavigation(request)) {
+            navigations.failure = `${request.failure().errorText} at ${request.url()}`;
+        }
+    });
+    return navigations;
+}
+
+// Waits for the page and captures it. If the page navigates by itself in the meantime,
+// it starts over on the new page.
+async function capturePage(page, navigations) {
+    for (let i = 0; ; i++) {
+        const started = navigations.started;
+        const navigated = () => navigations.started !== started && i < MAX_NAVIGATIONS;
+
+        await navigations.committed;
+        await page.waitForLoadState("load", { timeout: LOAD_TIMEOUT_MS }).catch(() => {});
+        await page.waitForLoadState("networkidle", { timeout: NETWORK_SETTLE_MS }).catch(() => {});
+        if (navigated()) {
+            continue;
+        }
+
+        try {
+            await autoScroll(page);
+            // With fullPage, the clip is relative to the whole page (shorter pages are kept whole).
+            const screenshot = await page.screenshot({
+                fullPage: true,
+                clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
+            });
+            const htmlContent = await page.content();
+            if (!navigated()) {
+                return { screenshot, htmlContent };
+            }
+        } catch (error) {
+            if (!navigated()) {
+                throw error;
+            }
+        }
+    }
+}
+
 (async () => {
     const args = process.argv.slice(2);
     if (args.length !== 1) {
@@ -151,17 +218,12 @@ async function autoScroll(page) {
         await blocker.enableBlockingInPage(page);
 
         // Navigate to the URL
-        await page.goto(url, { waitUntil: "load", timeout: 60000 });
-        await page.waitForLoadState("networkidle", { timeout: NETWORK_SETTLE_MS }).catch(() => {});
-        await autoScroll(page);
-
-        // Capture screenshot and HTML content
-        // With fullPage, the clip is relative to the whole page (shorter pages are kept whole).
-        const screenshot = await page.screenshot({
-            fullPage: true,
-            clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
-        });
-        const htmlContent = await page.content();
+        const navigations = trackNavigations(page);
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+        const { screenshot, htmlContent } = await capturePage(page, navigations);
+        if (page.url().startsWith("chrome-error://")) {
+            throw new Error(navigations.failure || "The page navigated to an address that couldn't be loaded");
+        }
 
         await browser.close();
         proxy.close();

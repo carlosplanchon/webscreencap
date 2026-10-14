@@ -13,6 +13,7 @@ numbers on the control port, which isn't counted.
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -88,6 +89,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, f'<div style="height: {height}px; background: linear-gradient(red, blue)"></div>')
         if url.path == "/latin1":
             return self._send(200, '<meta charset="iso-8859-1"><p>Año, señal, café</p>', encoding="iso-8859-1")
+        if url.path == "/never":
+            time.sleep(600)
+            return self._send(200, "")
+        if url.path == "/hanging-image":
+            return self._send(200, '<h1>visible content</h1><img src="/never">')
+        if url.path == "/js-redirect":
+            to = query.get("to", ["/landed"])[0]
+            height = int(query.get("height", ["0"])[0])
+            return self._send(200, f'<div style="height: {height}px">before</div>'
+                                   f'<script>setTimeout(() => location.href = "{to}", {int(query["ms"][0])});</script>')
+        if url.path == "/meta-refresh":
+            return self._send(200, f'<meta http-equiv="refresh" content="{int(query["s"][0])};url=/landed"><p>before</p>')
         return self._send(200, "<h1>public ok</h1>")
 
     do_POST = do_GET

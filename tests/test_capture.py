@@ -2,7 +2,7 @@
 import subprocess
 import unittest
 
-from helpers import SITE, SITE_CONTROL, fixture_stats, http, new_token, png_size, run_scraper
+from helpers import INTERNAL, SITE, SITE_CONTROL, fixture_stats, http, new_token, png_size, run_scraper
 
 
 class CaptureTest(unittest.TestCase):
@@ -11,6 +11,27 @@ class CaptureTest(unittest.TestCase):
         code, result, _, seconds = run_scraper(SITE + "/polling")
         self.assertEqual(code, 0, result)
         self.assertLess(seconds, 45)
+
+    def test_page_with_a_resource_that_never_loads(self):
+        code, result, _, seconds = run_scraper(SITE + "/hanging-image")
+        self.assertEqual(code, 0, result)
+        self.assertLess(seconds, 40)
+        _, _, html = http("GET", result["htmlUrl"])
+        self.assertIn(b"visible content", html)
+
+    def test_pages_that_redirect_by_themselves(self):
+        for path in ("/js-redirect?ms=1500", "/meta-refresh?s=1", "/js-redirect?ms=8000&height=20000"):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                _, _, html = http("GET", result["htmlUrl"])
+                self.assertIn(b"LANDED", html)
+
+    def test_redirect_to_a_page_that_cannot_load_fails(self):
+        target = INTERNAL.replace("http:", "https:", 1) + "/"
+        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=300&to={target}")
+        self.assertEqual(code, 1, result)
+        self.assertIn(f"ERR_TUNNEL_CONNECTION_FAILED at {target}", result["error"])
 
     def test_screenshots_are_cut_at_8192_px(self):
         for height, expected in ((20000, 8192), (500, 1080)):
