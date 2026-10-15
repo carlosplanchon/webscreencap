@@ -31,7 +31,7 @@ class CaptureTest(unittest.TestCase):
         self.assertLess(seconds, 30)
 
     def test_pages_that_redirect_by_themselves(self):
-        for path in ("/js-redirect?ms=1500", "/meta-refresh?s=1", "/js-redirect?ms=8000&height=20000"):
+        for path in ("/js-redirect?ms=1500", "/meta-refresh?s=1", "/js-redirect?ms=2000&height=20000"):
             with self.subTest(path=path):
                 code, result, _, _ = run_scraper(SITE + path)
                 self.assertEqual(code, 0, result)
@@ -39,7 +39,7 @@ class CaptureTest(unittest.TestCase):
                 self.assertIn(b"LANDED", html)
 
     def test_navigation_that_sends_no_request(self):
-        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=3000&height=20000&to=about:blank")
+        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=2000&height=20000&to=about:blank")
         self.assertEqual(code, 0, result)
         self.assertEqual(result["finalUrl"], "about:blank")
 
@@ -107,10 +107,12 @@ class CaptureTest(unittest.TestCase):
                 _, _, png = http("GET", result["screenshotUrl"])
                 self.assertEqual(png_size(png), (1920, expected))
 
-    def test_scrolling_stops_at_the_screenshot_height(self):
-        code, result, _, seconds = run_scraper(f"{SITE}/tall?height=30000")
+    def test_html_has_the_lazy_content_below_the_screenshot(self):
+        code, result, _, seconds = run_scraper(SITE + "/lazy")
         self.assertEqual(code, 0, result)
-        self.assertLess(seconds, 40)
+        self.assertLess(seconds, 30)
+        _, _, html = http("GET", result["htmlUrl"])
+        self.assertIn(b"LAZY-CONTENT", html)
 
     def test_html_is_saved_as_utf8(self):
         code, result, _, _ = run_scraper(SITE + "/latin1")

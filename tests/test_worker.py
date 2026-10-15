@@ -11,8 +11,8 @@ from pathlib import Path
 from helpers import (SITE, SITE_CONTROL, WORKER, api, fixture_stats, new_token, processes, redis_command, submit,
                      wait_for_api, wait_for_task)
 
-# About 20 s, while it scrolls down the page
-LONG_CAPTURE = SITE + "/tall?height=20000"
+# About 15 s, since one of its images never loads
+LONG_CAPTURE = SITE + "/hanging-image"
 
 
 def wait_until(condition, timeout, message):

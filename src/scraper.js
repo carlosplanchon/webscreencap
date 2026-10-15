@@ -14,7 +14,9 @@ const LOAD_TIMEOUT_MS = 10000;
 const MAX_NAVIGATIONS = 5;
 // Longest wait for the network to go quiet after "load"
 const NETWORK_SETTLE_MS = 5000;
-const MAX_SCROLL_MS = 60000;
+const MAX_SCROLL_MS = 30000;
+// Longest wait, after scrolling, for the content the scroll made the page load
+const LAZY_CONTENT_TIMEOUT_MS = 3000;
 const SCRIPT_TIMEOUT_MS = 150000;
 // Raise them only together with the VM's memory
 const MAX_SCREENSHOT_WIDTH = 1920;
@@ -79,10 +81,10 @@ function fail(message, details) {
 }
 
 async function autoScroll(page) {
-    await page.evaluate(async ({ maxScrollMs, maxHeight }) => {
+    await page.evaluate(async (maxScrollMs) => {
         await new Promise((resolve) => {
             var totalHeight = 0;
-            var distance = 1000; // Scroll distance per step
+            var distance = window.innerHeight || 1000; // One screen per step
             var startTime = Date.now();
             var timer = setInterval(() => {
                 // SVG documents have no body
@@ -91,14 +93,44 @@ async function autoScroll(page) {
                 window.scrollBy(0, distance);
                 totalHeight += distance;
   
-                // Stop at the bottom or at the screenshot's height, or after maxScrollMs.
-                if(totalHeight >= Math.min(scrollHeight, maxHeight) || Date.now() - startTime >= maxScrollMs){
+                // Stop at the bottom, or after maxScrollMs.
+                if(totalHeight >= scrollHeight - window.innerHeight || Date.now() - startTime >= maxScrollMs){
                     clearInterval(timer);
                     resolve();
                 }
-            }, 2000); // Interval between scrolls
+            }, 100); // Interval between scrolls
         });
-    }, { maxScrollMs: MAX_SCROLL_MS, maxHeight: MAX_SCREENSHOT_HEIGHT });
+    }, MAX_SCROLL_MS);
+}
+
+// The scripts, fetches and images that the page is still loading
+function trackRequests(page) {
+    const types = ["script", "fetch", "xhr", "image"];
+    const requests = new Set();
+    page.on("request", (request) => {
+        try {
+            if (types.includes(request.resourceType()) && request.frame() === page.mainFrame()) {
+                requests.add(request);
+            }
+        } catch {
+            // Service worker requests have no frame
+        }
+    });
+    page.on("requestfinished", (request) => requests.delete(request));
+    page.on("requestfailed", (request) => requests.delete(request));
+    return requests;
+}
+
+// Until the page goes a second without loading any of them
+async function waitForRequests(requests, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let quietSince = Date.now();
+    while (Date.now() - quietSince < 1000 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        if (requests.size > 0) {
+            quietSince = Date.now();
+        }
+    }
 }
 
 // Navigations that don't load a new document: no content, or a download
@@ -165,6 +197,7 @@ function declareUtf8() {
 
 // Starts over when the page navigates by itself; after MAX_NAVIGATIONS, captures without scrolling
 async function capturePage(page, navigations) {
+    const requests = trackRequests(page);
     for (let i = 0; ; i++) {
         const started = navigations.started;
         const navigated = () => navigations.started !== started;
@@ -181,7 +214,9 @@ async function capturePage(page, navigations) {
 
         try {
             if (!hurry) {
+                requests.clear();
                 await autoScroll(page);
+                await waitForRequests(requests, LAZY_CONTENT_TIMEOUT_MS);
             }
             // Without a body (SVG, for instance), fullPage would wait for one forever
             const hasBody = await page.evaluate(() => document.body !== null);

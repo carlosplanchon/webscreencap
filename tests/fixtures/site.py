@@ -81,6 +81,19 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/tall":
             height = int(query["height"][0])
             return self._send(200, f'<div style="height: {height}px; background: linear-gradient(red, blue)"></div>')
+        if url.path == "/lazy":
+            # Loads part of its content once that part scrolls into view, far below the screenshot's height
+            return self._send(200, '<div style="height: 15000px">top</div><div id="lazy" style="height: 1000px"></div>'
+                                   '<div style="height: 4000px"></div><script>'
+                                   'new IntersectionObserver((entries, observer) => {'
+                                   ' if (!entries[0].isIntersecting) return;'
+                                   ' observer.disconnect();'
+                                   ' fetch("/lazy-content").then((response) => response.text())'
+                                   '   .then((text) => document.getElementById("lazy").textContent = text);'
+                                   '}).observe(document.getElementById("lazy"));</script>')
+        if url.path == "/lazy-content":
+            time.sleep(1.5)
+            return self._send(200, "LAZY-CONTENT", content_type="text/plain")
         if url.path == "/latin1":
             return self._send(200, '<meta charset="iso-8859-1"><p>Año, señal, café</p>', encoding="iso-8859-1")
         if url.path == "/never":
