@@ -116,6 +116,16 @@ function errorStatus(error) {
     return error.code === "ENONPUBLIC" ? 403 : 502;
 }
 
+// Marks the proxy's own answers, so they aren't taken for the sites'
+const PROXY_ERROR_HEADER = "x-egress-proxy-error";
+
+function answerBlocked(res, status, error) {
+    res.writeHead(status, {
+        "content-type": "text/plain",
+        [PROXY_ERROR_HEADER]: encodeURIComponent(error.message),
+    }).end(`Blocked: ${error.message}\n`);
+}
+
 // close() also tears down open tunnels, so they can't keep the process alive
 function startEgressProxy() {
     const sockets = new Set();
@@ -135,7 +145,7 @@ function startEgressProxy() {
             }
             host = checkedHost(target.hostname);
         } catch (error) {
-            return res.writeHead(403, { "content-type": "text/plain" }).end(`Blocked: ${error.message}\n`);
+            return answerBlocked(res, 403, error);
         }
         const upstream = http.request({
             host,
@@ -155,9 +165,7 @@ function startEgressProxy() {
             if (res.headersSent) {
                 return res.destroy();
             }
-            // The body shows up in the capture, so a blocked redirect explains itself.
-            res.writeHead(errorStatus(error), { "content-type": "text/plain" })
-                .end(`Blocked: ${error.message}\n`);
+            answerBlocked(res, errorStatus(error), error);
         });
         res.on("close", () => upstream.destroy());
         req.pipe(upstream);
@@ -210,4 +218,4 @@ function startEgressProxy() {
     });
 }
 
-module.exports = { assertPublicUrl, isPublicAddress, startEgressProxy };
+module.exports = { PROXY_ERROR_HEADER, assertPublicUrl, isPublicAddress, startEgressProxy };

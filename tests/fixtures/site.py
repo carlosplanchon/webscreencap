@@ -46,10 +46,10 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             stats["connections"] += 1
 
-    def _send(self, code, body, headers=None, encoding="utf-8"):
+    def _send(self, code, body, headers=None, encoding="utf-8", content_type="text/html"):
         data = body.encode(encoding)
         self.send_response(code)
-        self.send_header("Content-Type", f"text/html; charset={encoding}")
+        self.send_header("Content-Type", f"{content_type}; charset={encoding}")
         self.send_header("Content-Length", str(len(data)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)
@@ -88,6 +88,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "")
         if url.path == "/hanging-image":
             return self._send(200, '<h1>visible content</h1><img src="/never">')
+        if url.path == "/hanging-script":
+            return self._send(200, '<h1>visible content</h1><script src="/never"></script>')
+        if url.path == "/image.svg":
+            return self._send(200, '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">'
+                                   '<rect width="200" height="100" fill="red"/></svg>', content_type="image/svg+xml")
+        if url.path == "/no-content":
+            return self._send(204, "")
+        if url.path == "/download":
+            return self._send(200, "a file", {"Content-Disposition": "attachment; filename=file.txt"})
+        if url.path == "/reloading":
+            return self._send(200, '<meta http-equiv="refresh" content="1"><p>reloading</p>')
         if url.path == "/js-redirect":
             to = query.get("to", ["/landed"])[0]
             height = int(query.get("height", ["0"])[0])

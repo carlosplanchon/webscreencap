@@ -5,7 +5,7 @@ import time
 import unittest
 
 from helpers import (INTERNAL, INTERNAL_CONTROL, SITE, SITE_CONTROL, LoopbackListener, UdpListener, fixture_stats,
-                     http, new_token, run_scraper)
+                     new_token, run_scraper)
 
 # What the /mechanisms page loads, except the popup: pages can't open them
 MECHANISMS = {"prefetch", "css", "img", "iframe", "fetch", "xhr", "worker", "ws", "eventsource", "beacon"}
@@ -37,12 +37,8 @@ class EgressTest(unittest.TestCase):
     def test_redirects_to_internal_addresses_are_blocked(self):
         before = fixture_stats(INTERNAL_CONTROL)["connections"]
         code, result, _, _ = run_scraper(f"{SITE}/redirect?to={INTERNAL}/secret")
-        self.assertEqual(code, 0, result)
-        # The capture shows the proxy's answer instead of the internal page
-        self.assertEqual(result["httpStatus"], 403)
-        _, _, html = http("GET", result["htmlUrl"])
-        self.assertIn(b"Blocked:", html)
-        self.assertNotIn(b"INTERNAL-SECRET", html)
+        self.assertEqual(code, 1, result)
+        self.assertIn(f"is not a public address at {INTERNAL}/secret", result["error"])
         self.assertEqual(fixture_stats(INTERNAL_CONTROL)["connections"], before)
 
     def test_pages_cannot_reach_internal_addresses(self):

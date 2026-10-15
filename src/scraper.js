@@ -5,7 +5,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("crypto");
 const util = require("util");
 const { loadBlocker } = require("./adblocker");
-const { assertPublicUrl, startEgressProxy } = require("./egress_proxy");
+const { PROXY_ERROR_HEADER, assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
 const NAVIGATION_TIMEOUT_MS = 60000;
 // After this, the page is captured even if some resource never finished loading
@@ -85,7 +85,9 @@ async function autoScroll(page) {
             var distance = 1000; // Scroll distance per step
             var startTime = Date.now();
             var timer = setInterval(() => {
-                var scrollHeight = document.body.scrollHeight;
+                // SVG documents have no body
+                var element = document.body || document.documentElement;
+                var scrollHeight = element ? element.scrollHeight : 0;
                 window.scrollBy(0, distance);
                 totalHeight += distance;
   
@@ -99,6 +101,12 @@ async function autoScroll(page) {
     }, { maxScrollMs: MAX_SCROLL_MS, maxHeight: MAX_SCREENSHOT_HEIGHT });
 }
 
+// Navigations that don't load a new document: no content, or a download
+function leavesNoDocument(response) {
+    return [204, 205].includes(response.status())
+        || /^\s*attachment/i.test(response.headers()["content-disposition"] || "");
+}
+
 // Counts the main frame's navigations and keeps the last response and error
 function trackNavigations(page) {
     const navigations = { started: 0, committed: Promise.resolve(), response: null, failure: null };
@@ -109,17 +117,30 @@ function trackNavigations(page) {
             return false;
         }
     };
+    // Until the navigation commits, or turns out not to load a new document
+    const settled = () => new Promise((resolve) => {
+        const done = () => {
+            clearTimeout(timer);
+            page.off("framenavigated", onFrame);
+            page.off("response", onResponse);
+            page.off("download", done);
+            resolve();
+        };
+        const onFrame = (frame) => frame === page.mainFrame() && done();
+        const onResponse = (response) => isMainFrameNavigation(response.request()) && leavesNoDocument(response) && done();
+        const timer = setTimeout(done, NAVIGATION_TIMEOUT_MS).unref();
+        page.on("framenavigated", onFrame);
+        page.on("response", onResponse);
+        page.on("download", done);
+    });
     page.on("request", (request) => {
         if (isMainFrameNavigation(request) && !request.redirectedFrom()) {
             navigations.started++;
-            navigations.committed = page.waitForEvent("framenavigated", {
-                predicate: (frame) => frame === page.mainFrame(),
-                timeout: NAVIGATION_TIMEOUT_MS,
-            }).catch(() => {});
+            navigations.committed = settled();
         }
     });
     page.on("response", (response) => {
-        if (isMainFrameNavigation(response.request())) {
+        if (isMainFrameNavigation(response.request()) && !leavesNoDocument(response)) {
             navigations.response = response;
         }
     });
@@ -131,32 +152,53 @@ function trackNavigations(page) {
     return navigations;
 }
 
-// If the page navigates by itself in the meantime, it starts over on the new one
+// The HTML is saved as UTF-8, so it must declare UTF-8, whatever the page said
+function declareUtf8() {
+    if (!document.head) {
+        return;
+    }
+    document.querySelectorAll("meta[charset], meta[http-equiv='content-type' i]").forEach((meta) => meta.remove());
+    const meta = document.createElement("meta");
+    meta.setAttribute("charset", "utf-8");
+    document.head.prepend(meta);
+}
+
+// Starts over when the page navigates by itself; after MAX_NAVIGATIONS, captures without scrolling
 async function capturePage(page, navigations) {
     for (let i = 0; ; i++) {
         const started = navigations.started;
-        const navigated = () => navigations.started !== started && i < MAX_NAVIGATIONS;
+        const navigated = () => navigations.started !== started;
+        const hurry = i >= MAX_NAVIGATIONS;
 
         await navigations.committed;
         await page.waitForLoadState("load", { timeout: LOAD_TIMEOUT_MS }).catch(() => {});
-        await page.waitForLoadState("networkidle", { timeout: NETWORK_SETTLE_MS }).catch(() => {});
-        if (navigated()) {
-            continue;
+        if (!hurry) {
+            await page.waitForLoadState("networkidle", { timeout: NETWORK_SETTLE_MS }).catch(() => {});
+            if (navigated()) {
+                continue;
+            }
         }
 
         try {
-            await autoScroll(page);
+            if (!hurry) {
+                await autoScroll(page);
+            }
+            // Without a body (SVG, for instance), fullPage would wait for one forever
+            const hasBody = await page.evaluate(() => document.body !== null);
             // With fullPage, the clip is relative to the whole page
-            const screenshot = await page.screenshot({
+            const screenshot = await page.screenshot(hasBody ? {
                 fullPage: true,
                 clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
-            });
+            } : {});
+            await page.evaluate(declareUtf8);
             const htmlContent = await page.content();
-            if (!navigated()) {
+            if (hurry || !navigated()) {
                 return { screenshot, htmlContent };
             }
         } catch (error) {
-            if (!navigated()) {
+            // Navigations to about:blank or to prerendered pages send no request first
+            const interrupted = navigated() || String(error?.message).includes("Execution context was destroyed");
+            if (!interrupted || i >= MAX_NAVIGATIONS + 2) {
                 throw error;
             }
         }
@@ -211,10 +253,14 @@ async function capturePage(page, navigations) {
 
         // Navigate to the URL
         const navigations = trackNavigations(page);
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+        await page.goto(url, { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
         const { screenshot, htmlContent } = await capturePage(page, navigations);
         if (page.url().startsWith("chrome-error://")) {
             throw new Error(navigations.failure || "The page navigated to an address that couldn't be loaded");
+        }
+        const proxyError = navigations.response && navigations.response.headers()[PROXY_ERROR_HEADER];
+        if (proxyError) {
+            throw new Error(`${decodeURIComponent(proxyError)} at ${page.url()}`);
         }
         const httpStatus = navigations.response ? navigations.response.status() : null;
         const finalUrl = page.url();

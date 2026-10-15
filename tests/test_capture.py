@@ -16,11 +16,19 @@ class CaptureTest(unittest.TestCase):
         self.assertLess(seconds, 45)
 
     def test_page_with_a_resource_that_never_loads(self):
-        code, result, _, seconds = run_scraper(SITE + "/hanging-image")
+        # An image doesn't hold up the HTML parser; a script does
+        for path in ("/hanging-image", "/hanging-script"):
+            with self.subTest(path=path):
+                code, result, _, seconds = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                self.assertLess(seconds, 40)
+                _, _, html = http("GET", result["htmlUrl"])
+                self.assertIn(b"visible content", html)
+
+    def test_svg_document(self):
+        code, result, _, seconds = run_scraper(SITE + "/image.svg")
         self.assertEqual(code, 0, result)
-        self.assertLess(seconds, 40)
-        _, _, html = http("GET", result["htmlUrl"])
-        self.assertIn(b"visible content", html)
+        self.assertLess(seconds, 30)
 
     def test_pages_that_redirect_by_themselves(self):
         for path in ("/js-redirect?ms=1500", "/meta-refresh?s=1", "/js-redirect?ms=8000&height=20000"):
@@ -30,11 +38,36 @@ class CaptureTest(unittest.TestCase):
                 _, _, html = http("GET", result["htmlUrl"])
                 self.assertIn(b"LANDED", html)
 
+    def test_navigation_that_sends_no_request(self):
+        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=3000&height=20000&to=about:blank")
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["finalUrl"], "about:blank")
+
+    def test_navigations_that_load_no_document(self):
+        # The page stays as it was, with its own status
+        for to in ("/no-content", "/download"):
+            with self.subTest(to=to):
+                path = f"/js-redirect?ms=500&to={to}"
+                code, result, _, seconds = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                self.assertLess(seconds, 30)
+                self.assertEqual((result["httpStatus"], result["finalUrl"]), (200, SITE + path))
+
+    def test_page_that_keeps_reloading(self):
+        code, result, _, seconds = run_scraper(SITE + "/reloading")
+        self.assertEqual(code, 0, result)
+        self.assertLess(seconds, 60)
+
     def test_redirect_to_a_page_that_cannot_load_fails(self):
-        target = INTERNAL.replace("http:", "https:", 1) + "/"
-        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=300&to={target}")
-        self.assertEqual(code, 1, result)
-        self.assertIn(f"ERR_TUNNEL_CONNECTION_FAILED at {target}", result["error"])
+        https_target = INTERNAL.replace("http:", "https:", 1) + "/"
+        for path, message in (
+            (f"/js-redirect?ms=300&to={https_target}", f"ERR_TUNNEL_CONNECTION_FAILED at {https_target}"),
+            ("/redirect?to=http://site:8099/", "ECONNREFUSED"),
+        ):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path)
+                self.assertEqual(code, 1, result)
+                self.assertIn(message, result["error"])
 
     def test_http_status_and_final_url(self):
         for path, status, final_path in (
@@ -85,6 +118,9 @@ class CaptureTest(unittest.TestCase):
         _, headers, html = http("GET", result["htmlUrl"])
         self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
         self.assertIn("Año, señal, café".encode(), html)
+        # The page's own <meta charset> would contradict the file
+        self.assertIn(b'<meta charset="utf-8">', html)
+        self.assertNotIn(b"iso-8859-1", html.lower())
 
     def test_failed_adblock_list_downloads_fail(self):
         process = subprocess.run(

@@ -229,9 +229,9 @@ curl -X POST "http://127.0.0.1:31337/webscreencap/api/task/screenshot" \
 }
 ```
 - `id` is the task identifier.
-- If the URL points to a non-public address (localhost, a private network, a cloud metadata endpoint...), the task fails. Redirects and anything the page loads are held to the same rule.
+- If the URL or one of its redirects points to a non-public address (localhost, a private network, a cloud metadata endpoint...), the task fails. Anything else the page loads is held to the same rule and blocked.
 - Screenshots are full-page but cut at 1920×8192 px, so that very long pages don't run the worker out of memory (`MAX_SCREENSHOT_WIDTH` / `MAX_SCREENSHOT_HEIGHT` in `scraper.js`).
-- The page is captured once it loads, or after 10 s if some of its resources never finish loading. Redirects the page makes by itself (JavaScript, meta refresh) are followed, up to 5; if one leads to an address that can't be loaded, the task fails.
+- The page is captured once it loads, or after 10 s if some of its resources never finish loading (unless one of them keeps the page from rendering at all, as a stalled script in its `<head>` does: then the task fails). Redirects the page makes by itself (JavaScript, meta refresh) are followed, up to 5, and a page that keeps navigating after that is captured without scrolling; if a redirect leads to an address that can't be loaded, the task fails.
 
 ### 2. Get Task Details
 
@@ -368,7 +368,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load.
-- **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect by themselves, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL, the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chromium runs without root and with its sandbox.
+- **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL, the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chromium runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 
