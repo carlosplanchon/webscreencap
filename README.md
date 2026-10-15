@@ -51,7 +51,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Endpoints require a valid `API_KEY`, sent in the `X-API-Key` header.
 
 6. **SSRF Protection**  
-   The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked.
+   The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked. Nothing skips the proxy that enforces it: Chromium runs without QUIC, WebRTC can't send UDP, and it can't resolve host names on its own.
 
 7. **Sandboxed Browser**  
    The worker runs as a non-root user, so Chromium keeps its sandbox (see [Dockerization](#dockerization)).
@@ -367,7 +367,7 @@ tests/run.sh -k redirect   # only the tests whose name matches
 Besides the service itself, that stack has a "public" test website and an internal service that browsers must never reach. The tests cover:
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
-- **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets and so on, while public addresses still load.
+- **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load.
 - **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect by themselves, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL, the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chromium runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).

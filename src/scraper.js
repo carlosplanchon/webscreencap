@@ -186,11 +186,16 @@ async function capturePage(page, navigations) {
         const proxy = await startEgressProxy();
 
         chromium.use(stealth);
-        // Playwright sends loopback through the proxy too
+        // Everything goes through the proxy, loopback included; the flags close the bypasses
         const browser = await chromium.launch({
             headless: true,
             chromiumSandbox: true,
-            proxy: { server: proxy.url }
+            proxy: { server: proxy.url },
+            args: [
+                "--disable-quic",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+            ]
         });
         // No userAgent: the stealth plugin sets one that matches the browser
         const context = await browser.newContext({

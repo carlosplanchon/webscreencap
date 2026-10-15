@@ -1,9 +1,10 @@
 """The worker's egress proxy: what a page loads can only reach public addresses."""
 import socket
 import subprocess
+import time
 import unittest
 
-from helpers import (INTERNAL, INTERNAL_CONTROL, SITE, SITE_CONTROL, LoopbackListener, fixture_stats,
+from helpers import (INTERNAL, INTERNAL_CONTROL, SITE, SITE_CONTROL, LoopbackListener, UdpListener, fixture_stats,
                      http, new_token, run_scraper)
 
 # What the /mechanisms page loads, except the popup: pages can't open them
@@ -72,6 +73,16 @@ class EgressTest(unittest.TestCase):
             if path.startswith(f"/m/{token}/")
         }
         self.assertEqual(reached, MECHANISMS)
+
+    def test_webrtc_cannot_send_udp(self):
+        # UDP can't go through the proxy, so WebRTC must not send it at all
+        own_ip = socket.gethostbyname(socket.gethostname())
+        with UdpListener() as udp:
+            stun = "&".join(f"stun=stun:{host}:{udp.port}" for host in ("127.0.0.1", own_ip))
+            code, result, _, _ = run_scraper(f"{SITE}/webrtc?{stun}")
+            self.assertEqual(code, 0, result)
+            time.sleep(0.5)
+        self.assertEqual(udp.datagrams, 0)
 
 
 if __name__ == "__main__":

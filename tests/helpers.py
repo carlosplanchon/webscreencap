@@ -142,3 +142,31 @@ class LoopbackListener:
 
     def __exit__(self, *exc):
         self.server.shutdown()
+
+
+class UdpListener:
+    """A UDP socket on every address of this container that counts the datagrams it gets."""
+
+    def __enter__(self):
+        self.datagrams = 0
+        self.stopped = False
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(("0.0.0.0", 0))
+        self.socket.settimeout(0.2)
+        self.port = self.socket.getsockname()[1]
+        self.thread = threading.Thread(target=self._count, daemon=True)
+        self.thread.start()
+        return self
+
+    def _count(self):
+        while not self.stopped:
+            try:
+                self.socket.recvfrom(4096)
+                self.datagrams += 1
+            except TimeoutError:
+                pass
+
+    def __exit__(self, *exc):
+        self.stopped = True
+        self.thread.join()
+        self.socket.close()

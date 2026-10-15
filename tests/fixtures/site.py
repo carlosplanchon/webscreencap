@@ -95,6 +95,12 @@ class Handler(BaseHTTPRequestHandler):
                                    f'<script>setTimeout(() => location.href = "{to}", {int(query["ms"][0])});</script>')
         if url.path == "/meta-refresh":
             return self._send(200, f'<meta http-equiv="refresh" content="{int(query["s"][0])};url=/landed"><p>before</p>')
+        if url.path == "/webrtc":
+            servers = json.dumps([{"urls": stun} for stun in query["stun"]])
+            return self._send(200, "<p>webrtc</p><script>"
+                                   f"const pc = new RTCPeerConnection({{iceServers: {servers}}});"
+                                   "pc.createDataChannel('x');"
+                                   "pc.createOffer().then((offer) => pc.setLocalDescription(offer));</script>")
         return self._send(200, "<h1>public ok</h1>")
 
     do_POST = do_GET
