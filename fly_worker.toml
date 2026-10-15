@@ -1,9 +1,9 @@
-# fly.toml app configuration file generated for webscreencap-celery-worker on 2025-01-26T00:18:08-03:00
+# fly.toml app configuration file generated for webscreencap-taskiq-worker on 2025-01-26T00:18:08-03:00
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'webscreencap-celery-worker'
+app = 'webscreencap-taskiq-worker'
 primary_region = 'iad'
 kill_timeout = 200
 

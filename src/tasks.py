@@ -4,13 +4,13 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from typing import Annotated
 
-from redis import exceptions as redis_errors
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
-from taskiq import Context, TaskiqDepends
+from taskiq import Context, NoResultError, TaskiqDepends
 from taskiq.serializers import JSONSerializer
 from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
 
@@ -24,33 +24,49 @@ MAX_ATTEMPTS = 2
 
 REDIS_URL = os.environ["REDIS_URL"]
 # Reconnects when Redis has dropped a connection (after a restart, for instance)
-REDIS_RETRY = {
-    "retry": Retry(ExponentialBackoff(cap=2, base=0.2), 5),
-    "retry_on_error": [redis_errors.ConnectionError, redis_errors.TimeoutError],
-}
+REDIS_RETRY = Retry(ExponentialBackoff(cap=2, base=0.2), 5)
 
 logger = logging.getLogger(__name__)
 
+
+class StreamBroker(RedisStreamBroker):
+    # Deletes each message once it's acknowledged, so the stream only keeps the ones still to do
+    def _ack_generator(self, id, queue_name):
+        async def ack():
+            async with Redis(connection_pool=self.connection_pool) as redis_conn:
+                pipeline = redis_conn.pipeline()
+                pipeline.xack(queue_name, self.consumer_group_name, id).xdel(queue_name, id)
+                await pipeline.execute()
+
+        return ack
+
+
 # One message at a time; a dead worker's message is retried after idle_timeout
-broker = RedisStreamBroker(
+broker = StreamBroker(
     REDIS_URL,
+    # Not TaskIQ's default names, which another app on the same Redis may use
+    queue_name="webscreencap",
+    consumer_group_name="webscreencap",
     consumer_id="0",
     xread_count=1,
     unacknowledged_batch_size=1,
-    unacknowledged_lock_timeout=30,
     idle_timeout=300_000,
-    maxlen=10_000,
-    **REDIS_RETRY,
+    retry=REDIS_RETRY,
 ).with_result_backend(
     RedisAsyncResultBackend(
         REDIS_URL,
         result_ex_time=RESULT_TTL,
         serializer=JSONSerializer(),
         prefix_str="webscreencap-result",
-        **REDIS_RETRY,
+        retry=REDIS_RETRY,
     )
 )
-redis = Redis.from_url(REDIS_URL, **REDIS_RETRY)
+redis = Redis(connection_pool=broker.connection_pool)
+
+
+# Unknown ids have no result either, so the ones handed out are remembered
+def task_marker_key(task_id: str) -> str:
+    return f"webscreencap-task-{task_id}"
 
 
 class ScrapeError(Exception):
@@ -82,10 +98,19 @@ def read_result(stdout):
 
 @broker.task(task_name="capture_screenshot_and_html")
 async def capture_screenshot_and_html(url: str, context: Annotated[Context, TaskiqDepends()]) -> dict:
-    attempts_key = f"webscreencap-attempts-{context.message.task_id}"
-    attempts = await redis.incr(attempts_key)
+    task_id = context.message.task_id
+    # Done already, but its acknowledgment got lost
+    if await broker.result_backend.is_result_ready(task_id):
+        raise NoResultError
+    # So old that the API has forgotten it; otherwise, the API keeps it while it runs
+    if not await redis.expire(task_marker_key(task_id), RESULT_TTL):
+        raise NoResultError
+
+    # One member per run, so a command that redis-py resends doesn't count twice
+    attempts_key = f"webscreencap-attempts-{task_id}"
+    await redis.sadd(attempts_key, uuid.uuid4().hex)
     await redis.expire(attempts_key, RESULT_TTL)
-    if attempts > MAX_ATTEMPTS:
+    if await redis.scard(attempts_key) > MAX_ATTEMPTS:
         raise ScrapeError("The worker stopped while processing the URL")
 
     script_path = os.path.join(os.path.dirname(__file__), "scraper.js")
@@ -93,6 +118,8 @@ async def capture_screenshot_and_html(url: str, context: Annotated[Context, Task
         "node", script_path, url,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        # Outside the worker's process group, so a Ctrl+C in its terminal lets the capture finish
+        start_new_session=True,
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), SCRAPER_TIMEOUT)

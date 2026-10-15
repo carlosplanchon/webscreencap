@@ -189,11 +189,11 @@ uv run uvicorn main_api:app --host 0.0.0.0 --port 31337
 In another terminal, also from `src/`:
 
 ```bash
-uv run taskiq worker tasks:broker --workers 1 --max-async-tasks 1
+uv run ./worker.sh
 ```
 
 Where:
-- `tasks:broker` is the TaskIQ broker in `tasks.py`, and the options keep it to one capture at a time.
+- `worker.sh` checks that Redis answers, then starts the TaskIQ worker with the broker in `tasks.py` (`taskiq worker tasks:broker`), one capture at a time.
 
 Now you have the API and the worker up and running.
 
@@ -277,21 +277,21 @@ curl "http://127.0.0.1:31337/webscreencap/api/task_details/abc123" \
     }
   }
   ```
-- Returns `404` if the task id is unknown or its result has already expired (results are kept for 1 day).
+- Returns `404` if the task id is unknown or its result has already expired (results are kept for 1 day). A task that waits in the queue for more than 1 day (with the worker down, for instance) is dropped, and returns `404` too.
 
 ---
 
 ## Running the Worker
 
-The worker is defined in **`tasks.py`** (run it from `src/`):
+The worker is defined in **`tasks.py`**, and **`worker.sh`** starts it (run it from `src/`):
 
 ```bash
-uv run taskiq worker tasks:broker --workers 1 --max-async-tasks 1
+uv run ./worker.sh
 ```
 
-- **`tasks:broker`** references the TaskIQ broker, which uses a Redis stream.
+- It runs `taskiq worker tasks:broker`, the TaskIQ broker in `tasks.py`, which uses a Redis stream. Before that, it fails if `REDIS_URL` is missing or Redis doesn't answer, since TaskIQ would keep restarting a worker process that can't start.
 - Make sure your environment variables are set so the Node.js script can access them.
-- When it's told to stop, it finishes the capture in progress first.
+- When it's told to stop (Ctrl+C included), it finishes the capture in progress first.
 - If it dies in the middle of a capture, the capture is retried once, 5 minutes later, when the next task arrives; if it's cut short again, it fails.
 
 ---
@@ -368,6 +368,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load.
+- **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that a Ctrl+C lets the capture in progress finish, that finished tasks leave the queue, and that a task that already has a result, or that waited too long, doesn't run again.
 - **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (scrolling stops there too), the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL, the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chromium runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
@@ -470,7 +471,7 @@ RUN node adblocker.js
 # Without root, so Chromium runs with its sandbox
 RUN useradd --create-home pwuser
 USER pwuser
-CMD ["taskiq", "worker", "tasks:broker", "--workers", "1", "--max-async-tasks", "1"]
+CMD ["./worker.sh"]
 ```
 
 ### Dockerfile for the Main API
@@ -506,9 +507,9 @@ fly deploy -c fly_worker.toml
 fly deploy -c fly_main_api.toml
 ```
 
-- **`fly_worker.toml`** is your Fly configuration for the worker (its Fly app is still called `webscreencap-celery-worker`). Fly waits `kill_timeout` seconds before killing a machine it stops (on deploys, for instance). The default of 5 s would lose the capture in progress, so the worker gets 200 s, longer than a capture can take:
+- **`fly_worker.toml`** is your Fly configuration for the worker. Fly waits `kill_timeout` seconds before killing a machine it stops (on deploys, for instance). The default of 5 s would lose the capture in progress, so the worker gets 200 s, longer than a capture can take:
   ```toml
-  app = 'webscreencap-celery-worker'
+  app = 'webscreencap-taskiq-worker'
   primary_region = 'iad'
   kill_timeout = 200
 
@@ -567,7 +568,7 @@ fly secrets set -a webscreencap \
   REDIS_URL="$REDIS_URL"
 ```
 
-Fly will store these as secrets and inject them into your application’s environment at runtime. Run the same command with `-a webscreencap-celery-worker`, since **both** the worker app and the main API app need them. Setting secrets restarts the app’s Machines; add `--stage` to apply them on the next deploy instead.
+Fly will store these as secrets and inject them into your application’s environment at runtime. Run the same command with `-a webscreencap-taskiq-worker`, since **both** the worker app and the main API app need them. Setting secrets restarts the app’s Machines; add `--stage` to apply them on the next deploy instead.
 
 The file URL settings aren't secret, so they can go in an `[env]` section of `fly_worker.toml` instead (only needed to change the defaults):
 

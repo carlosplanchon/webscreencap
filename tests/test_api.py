@@ -30,8 +30,8 @@ class ApiTest(unittest.TestCase):
                 self.assertEqual(status, 422)
 
     def test_unknown_task_is_404(self):
-        # "taskiq" is also the name of the queue's key in Redis
-        for task_id in ("no-such-task", "taskiq"):
+        # "webscreencap" is also the name of the queue's key in Redis
+        for task_id in ("no-such-task", "webscreencap"):
             with self.subTest(task_id=task_id):
                 status, _ = api("GET", f"/task_details/{task_id}")
                 self.assertEqual(status, 404)

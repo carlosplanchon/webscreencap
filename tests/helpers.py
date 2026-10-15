@@ -19,6 +19,7 @@ SITE_CONTROL = os.environ["SITE_CONTROL_URL"]
 INTERNAL = os.environ["INTERNAL_URL"]
 INTERNAL_CONTROL = os.environ["INTERNAL_CONTROL_URL"]
 SCRAPER = "/app/src/scraper.js"
+WORKER = "/app/src/worker.sh"
 
 
 def http(method, url, body=None, headers=None, timeout=30):
@@ -96,12 +97,19 @@ def png_size(data):
     return struct.unpack(">II", data[16:24])
 
 
+def redis_command(*args):
+    """Sends one command to Redis; returns its raw reply."""
+    url = urllib.parse.urlsplit(os.environ["REDIS_URL"])
+    parts = [str(arg).encode() for arg in args]
+    command = b"*%d\r\n" % len(parts) + b"".join(b"$%d\r\n%s\r\n" % (len(part), part) for part in parts)
+    with socket.create_connection((url.hostname, url.port or 6379), timeout=10) as connection:
+        connection.sendall(command)
+        return connection.recv(65536)
+
+
 def drop_redis_connections():
     """Makes Redis close every client connection, as a restart does."""
-    url = urllib.parse.urlsplit(os.environ["REDIS_URL"])
-    with socket.create_connection((url.hostname, url.port or 6379), timeout=10) as connection:
-        connection.sendall(b"CLIENT KILL TYPE normal\r\n")
-        return connection.recv(64)
+    return redis_command("CLIENT", "KILL", "TYPE", "normal")
 
 
 def processes():

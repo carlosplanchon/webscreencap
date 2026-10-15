@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, HttpUrl
 from taskiq_redis.exceptions import ResultIsMissingError
-from tasks import RESULT_TTL, ScrapeError, broker, capture_screenshot_and_html, redis
+from tasks import RESULT_TTL, ScrapeError, broker, capture_screenshot_and_html, redis, task_marker_key
 
 
 @asynccontextmanager
@@ -16,7 +16,6 @@ async def lifespan(app: FastAPI):
     await broker.startup()
     yield
     await broker.shutdown()
-    await redis.aclose()
 
 
 # FastAPI Setup:
@@ -42,11 +41,6 @@ def require_api_key(api_key: str | None = Security(api_key_header)) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-# Unknown ids have no result either, so the ones handed out are remembered
-def task_marker_key(task_id: str) -> str:
-    return f"webscreencap-task-{task_id}"
-
-
 # Models
 class TaskInitOut(BaseModel):
     id: str
@@ -69,11 +63,12 @@ async def capture_screenshot_with_api_key(request: ScreenshotRequest):
     Requires the `X-API-Key` header.
     """
     try:
-        # Create the task
-        task = await capture_screenshot_and_html.kiq(str(request.url))
-        await redis.set(task_marker_key(task.task_id), "1", ex=RESULT_TTL)
+        # Remembered before it's queued, since the worker skips the tasks the API doesn't know
+        task_id = broker.id_generator()
+        await redis.set(task_marker_key(task_id), "1", ex=RESULT_TTL)
+        await capture_screenshot_and_html.kicker().with_task_id(task_id).kiq(str(request.url))
         return TaskInitOut(
-            id=task.task_id,
+            id=task_id,
             message="Task started successfully"
         )
     except Exception as e:
@@ -95,12 +90,10 @@ async def get_task_details_json(task_id: str):
     """
     try:
         # Look up the task's result
-        result = None
-        if await broker.result_backend.is_result_ready(task_id):
-            try:
-                result = await broker.result_backend.get_result(task_id)
-            except ResultIsMissingError:
-                pass  # expired in between
+        try:
+            result = await broker.result_backend.get_result(task_id)
+        except ResultIsMissingError:
+            result = None
 
         # Unknown (or expired) ids have neither a result nor a marker
         not_found = result is None and not await redis.exists(task_marker_key(task_id))

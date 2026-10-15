@@ -83,4 +83,4 @@ RUN node adblocker.js
 # Without root, so Chromium runs with its sandbox
 RUN useradd --create-home pwuser
 USER pwuser
-CMD ["taskiq", "worker", "tasks:broker", "--workers", "1", "--max-async-tasks", "1"]
+CMD ["./worker.sh"]
