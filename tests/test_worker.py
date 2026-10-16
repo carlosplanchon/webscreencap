@@ -13,6 +13,12 @@ from helpers import (SITE, SITE_CONTROL, WORKER, api, fixture_stats, new_token, 
 
 # About 15 s, since one of its images never loads
 LONG_CAPTURE = SITE + "/hanging-image"
+# Queues a message for a consumer that took it 10 minutes ago and never acknowledged it, as a dead worker would
+ABANDON = """
+local id = redis.call('XADD', KEYS[1], '*', 'data', ARGV[1])
+redis.call('XREADGROUP', 'GROUP', ARGV[2], ARGV[3], 'COUNT', 1, 'STREAMS', KEYS[1], '>')
+return redis.call('XCLAIM', KEYS[1], ARGV[2], ARGV[3], 0, id, 'IDLE', 600000, 'JUSTID')
+"""
 
 
 def wait_until(condition, timeout, message):
@@ -65,6 +71,20 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(redis_command("TYPE", "webscreencap"), b"+stream\r\n")
         self.assertIn(b"webscreencap", redis_command("XINFO", "GROUPS", "webscreencap"))
         wait_until(lambda: redis_command("XLEN", "webscreencap") == b":0\r\n", 10, "finished tasks stay in the queue")
+
+    def test_task_of_a_dead_worker_is_taken_over(self):
+        token = new_token()
+        task_id = new_token()
+        message = {"task_id": task_id, "task_name": "capture_screenshot_and_html", "labels": {},
+                   "args": [f"{SITE}/landed?{token}"], "kwargs": {}}
+        redis_command("SET", f"webscreencap-task-{task_id}", "1", "EX", 3600)
+        # In one step, so that the stack's worker can't take the message first
+        reply = redis_command("EVAL", ABANDON, 1, "webscreencap", json.dumps(message), "webscreencap", "dead-worker")
+        self.assertTrue(reply.startswith(b"*1\r\n"), reply)
+        # No other task arrives
+        details = wait_for_task(task_id, timeout=60)
+        self.assertEqual(details["status"], "SUCCESS", details)
+        self.assertTrue(any(token in path for path in fixture_stats(SITE_CONTROL)["requests"]))
 
     def test_task_that_waited_too_long_is_dropped(self):
         busy = submit(LONG_CAPTURE)

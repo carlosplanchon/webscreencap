@@ -296,7 +296,7 @@ uv run ./worker.sh
 - It runs `taskiq worker tasks:broker`, the TaskIQ broker in `tasks.py`, which uses a Redis stream. Before that, it fails if `REDIS_URL` is missing or Redis doesn't answer, since TaskIQ would keep restarting a worker process that can't start.
 - Make sure your environment variables are set so the Node.js script can access them.
 - When it's told to stop (Ctrl+C included), it finishes the capture in progress first.
-- If it dies in the middle of a capture, the capture is retried once, 5 minutes later, when the next task arrives; if it's cut short again, it fails.
+- If it dies in the middle of a capture, the capture is retried once, about 5 minutes later; if it's cut short again, it fails.
 
 ---
 
@@ -371,7 +371,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load.
-- **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that a Ctrl+C lets the capture in progress finish, that finished tasks leave the queue, and that a task that already has a result, or that waited too long, doesn't run again.
+- **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that a Ctrl+C lets the capture in progress finish, that finished tasks leave the queue, that a dead worker's task is taken over without waiting for another one, and that a task that already has a result, or that waited too long, doesn't run again.
 - **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (and that a longer page is left as it was), lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL (also of HTTP errors without a body), the file URL settings, that the ad blocker's styles are left out of the HTML, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).

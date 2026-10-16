@@ -10,7 +10,7 @@ from typing import Annotated
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
-from taskiq import Context, NoResultError, TaskiqDepends
+from taskiq import AckableMessage, Context, NoResultError, TaskiqDepends
 from taskiq.serializers import JSONSerializer
 from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
 
@@ -39,6 +39,28 @@ class StreamBroker(RedisStreamBroker):
                 await pipeline.execute()
 
         return ack
+
+    # Takes over a dead worker's messages also when no new message arrives
+    async def listen(self):
+        async with Redis(connection_pool=self.connection_pool) as redis_conn:
+            while True:
+                fetched = await redis_conn.xreadgroup(
+                    self.consumer_group_name, self.consumer_name, {self.queue_name: ">"},
+                    count=self.count, block=self.block,
+                )
+                for _, messages in fetched:
+                    for message_id, message in messages:
+                        yield self._ackable(message_id, message)
+                _, claimed, *_ = await redis_conn.xautoclaim(
+                    self.queue_name, self.consumer_group_name, self.consumer_name,
+                    min_idle_time=self.idle_timeout, count=self.unacknowledged_batch_size,
+                )
+                for message_id, message in claimed:
+                    yield self._ackable(message_id, message)
+
+    def _ackable(self, message_id, message):
+        ack = self._ack_generator(id=message_id, queue_name=self.queue_name)
+        return AckableMessage(data=message[b"data"], ack=ack)
 
 
 # One message at a time; a dead worker's message is retried after idle_timeout
