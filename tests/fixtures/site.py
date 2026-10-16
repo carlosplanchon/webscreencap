@@ -106,6 +106,10 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/lazy-content":
             time.sleep(1.5)
             return self._send(200, "LAZY-CONTENT", content_type="text/plain")
+        if url.path == "/ad":
+            # An ad slot, which the ad blocker's styles hide, taller than the screenshot
+            return self._send(200, "<style>p { color: black; }</style><p>content</p>"
+                                   '<ad-slot style="display: block; height: 20000px; background: red">AD</ad-slot>')
         if url.path == "/latin1":
             return self._send(200, '<meta charset="iso-8859-1"><p>Año, señal, café</p>', encoding="iso-8859-1")
         if url.path == "/never":

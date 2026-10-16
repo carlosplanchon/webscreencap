@@ -163,6 +163,17 @@ class CaptureTest(unittest.TestCase):
         self.assertIn(b'<meta charset="utf-8">', html)
         self.assertNotIn(b"iso-8859-1", html.lower())
 
+    def test_ad_blocker_styles_are_left_out_of_the_html(self):
+        code, result, _, _ = run_scraper(SITE + "/ad")
+        self.assertEqual(code, 0, result)
+        # They hide the ad in the screenshot, so the page fits in the window
+        _, _, png = http("GET", result["screenshotUrl"])
+        self.assertLess(png_size(png)[1], 1080)
+        # The HTML keeps the page's own style and the ad
+        _, _, html = http("GET", result["htmlUrl"])
+        self.assertEqual(re.findall(rb"<style\b[^>]*>(.*?)</style>", html, re.S), [b"p { color: black; }"])
+        self.assertIn(b"<ad-slot", html)
+
     def test_failed_adblock_list_downloads_fail(self):
         process = subprocess.run(
             ["node", "--test", "/app/tests/adblocker.test.js"], capture_output=True, text=True,

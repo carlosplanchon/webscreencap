@@ -42,7 +42,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Uses [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-nodejs), a Playwright patched to avoid bot detection, with Google Chrome in a real window, on a virtual display (Xvfb).
 
 3. **Ad-blocking**  
-   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. The filter lists are downloaded and parsed when the worker image is built (the build fails if any of them can't be downloaded).
+   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. Its styles hide ad slots in the screenshot, but they're left out of the saved HTML. The filter lists are downloaded and parsed when the worker image is built (the build fails if any of them can't be downloaded).
 
 4. **S3-Compatible Upload**  
    Captured artifacts are uploaded to Tigris (or any S3-compatible storage configured via environment variables).
@@ -372,7 +372,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load.
 - **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that a Ctrl+C lets the capture in progress finish, that finished tasks leave the queue, and that a task that already has a result, or that waited too long, doesn't run again.
-- **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (and that a longer page is left as it was), lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL (also of HTTP errors without a body), the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
+- **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (and that a longer page is left as it was), lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL (also of HTTP errors without a body), the file URL settings, that the ad blocker's styles are left out of the HTML, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 

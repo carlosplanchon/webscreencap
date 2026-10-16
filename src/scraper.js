@@ -3,7 +3,7 @@ const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/clien
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("crypto");
 const util = require("util");
-const { loadBlocker } = require("./adblocker");
+const { STYLE_MARKER, loadBlocker, removeBlockerStyles } = require("./adblocker");
 const { PROXY_ERROR_HEADER, assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
 const NAVIGATION_TIMEOUT_MS = 60000;
@@ -257,6 +257,8 @@ async function capturePage(page, navigations) {
             if (styles) {
                 await page.evaluate(restoreHeight, styles);
             }
+            // The ad blocker's styles hide ads in the screenshot, but the HTML is the page's
+            await page.evaluate(removeBlockerStyles, STYLE_MARKER);
             await page.evaluate(declareUtf8);
             const htmlContent = await page.content();
             if (hurry || !navigated()) {
