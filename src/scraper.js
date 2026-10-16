@@ -187,6 +187,30 @@ function trackNavigations(page) {
     return navigations;
 }
 
+// Cuts a page longer than maxHeight there; returns the styles to put back, or null
+function capHeight(maxHeight) {
+    const elements = [document.documentElement, document.body];
+    if (Math.max(...elements.map((element) => element.scrollHeight)) <= maxHeight) {
+        return null;
+    }
+    const styles = elements.map((element) => element.getAttribute("style"));
+    for (const element of elements) {
+        element.style.setProperty("height", `${maxHeight}px`, "important");
+        element.style.setProperty("overflow", "hidden", "important");
+    }
+    return styles;
+}
+
+function restoreHeight(styles) {
+    [document.documentElement, document.body].forEach((element, i) => {
+        if (styles[i] === null) {
+            element.removeAttribute("style");
+        } else {
+            element.style.cssText = styles[i];
+        }
+    });
+}
+
 // The HTML is saved as UTF-8, so it must declare UTF-8, whatever the page said
 function declareUtf8() {
     if (!document.head) {
@@ -223,11 +247,16 @@ async function capturePage(page, navigations) {
             }
             // Without a body (SVG, for instance), fullPage would wait for one forever
             const hasBody = await page.evaluate(() => document.body !== null);
+            // Chrome draws the whole page for a full-page screenshot, which can take minutes on a long one
+            const styles = hasBody ? await page.evaluate(capHeight, MAX_SCREENSHOT_HEIGHT) : null;
             // With fullPage, the clip is relative to the whole page
             const screenshot = await page.screenshot(hasBody ? {
                 fullPage: true,
                 clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
             } : {});
+            if (styles) {
+                await page.evaluate(restoreHeight, styles);
+            }
             await page.evaluate(declareUtf8);
             const htmlContent = await page.content();
             if (hurry || !navigated()) {

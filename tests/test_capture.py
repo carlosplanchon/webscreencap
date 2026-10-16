@@ -134,6 +134,18 @@ class CaptureTest(unittest.TestCase):
         self.assertLess(sizes[500][1], 1080)
         self.assertTrue(all(width <= 1920 for width, _ in sizes.values()), sizes)
 
+    def test_long_page_is_put_back_after_its_screenshot(self):
+        # It's cut short while it's captured, so that Chrome doesn't draw all of it
+        for query, tags in (
+            ("", [b"<html>", b"<body>"]),
+            ("&styled=1", [b'<html style="background-color: white;">', b'<body style="margin: 0px;">']),
+        ):
+            with self.subTest(query=query):
+                code, result, _, _ = run_scraper(f"{SITE}/tall?height=20000{query}")
+                self.assertEqual(code, 0, result)
+                _, _, html = http("GET", result["htmlUrl"])
+                self.assertEqual(re.findall(rb"<(?:html|body)\b[^>]*>", html), tags)
+
     def test_html_has_the_lazy_content_below_the_screenshot(self):
         code, result, _, seconds = run_scraper(SITE + "/lazy")
         self.assertEqual(code, 0, result)

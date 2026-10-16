@@ -89,7 +89,10 @@ class Handler(BaseHTTPRequestHandler):
                                    "setInterval(() => fetch('/ping?' + Date.now()), 300);</script>")
         if url.path == "/tall":
             height = int(query["height"][0])
-            return self._send(200, f'<div style="height: {height}px; background: linear-gradient(red, blue)"></div>')
+            page = f'<div style="height: {height}px; background: linear-gradient(red, blue)"></div>'
+            if "styled" in query:
+                page = f'<html style="background-color: white;"><body style="margin: 0px;">{page}</body></html>'
+            return self._send(200, page)
         if url.path == "/lazy":
             # Loads part of its content once that part scrolls into view, far below the screenshot's height
             return self._send(200, '<div style="height: 15000px">top</div><div id="lazy" style="height: 1000px"></div>'
