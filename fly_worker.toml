@@ -11,6 +11,6 @@ kill_timeout = 200
   dockerfile = 'Dockerfile_WORKER'
 
 [[vm]]
-  memory = '1gb'
+  memory = '2gb'
   cpu_kind = 'shared'
   cpus = 1

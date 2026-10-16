@@ -3,11 +3,9 @@
 cd "$(dirname "$0")"
 
 sudo pacman -S nodejs npm pnpm --noconfirm --needed
-
-# Required by Playwright's Chromium.
-sudo pacman -S atk at-spi2-atk --noconfirm --needed
-sudo pacman -S libcups libxkbcommon libxcomposite --noconfirm --needed
-sudo pacman -S alsa-lib --noconfirm --needed
+# A virtual display, for machines without one
+sudo pacman -S xorg-server-xvfb --noconfirm --needed
 
 pnpm install --frozen-lockfile
-pnpm playwright install chromium
+# Google Chrome isn't in the official repositories, but in the AUR
+command -v google-chrome-stable > /dev/null || echo "Install Google Chrome from the AUR (google-chrome)."

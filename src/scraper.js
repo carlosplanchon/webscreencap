@@ -1,5 +1,4 @@
-const { chromium } = require("playwright-extra");
-const stealth = require("puppeteer-extra-plugin-stealth")();
+const { chromium } = require("patchright");
 const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("crypto");
@@ -8,6 +7,7 @@ const { loadBlocker } = require("./adblocker");
 const { PROXY_ERROR_HEADER, assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
 const NAVIGATION_TIMEOUT_MS = 60000;
+const HTTP_ERROR_WITHOUT_BODY = "net::ERR_HTTP_RESPONSE_CODE_FAILURE";
 // After this, the page is captured even if some resource never finished loading
 const LOAD_TIMEOUT_MS = 10000;
 // Redirects the page makes by itself (JavaScript, meta refresh) that are followed
@@ -166,7 +166,8 @@ function trackNavigations(page) {
         page.on("download", done);
     });
     page.on("request", (request) => {
-        if (isMainFrameNavigation(request) && !request.redirectedFrom()) {
+        // Chrome's error pages retry the failed navigation by themselves; that's not the page navigating
+        if (isMainFrameNavigation(request) && !request.redirectedFrom() && !page.url().startsWith("chrome-error://")) {
             navigations.started++;
             navigations.committed = settled();
         }
@@ -177,8 +178,10 @@ function trackNavigations(page) {
         }
     });
     page.on("requestfailed", (request) => {
-        if (isMainFrameNavigation(request)) {
-            navigations.failure = `${request.failure().errorText} at ${request.url()}`;
+        const { errorText } = request.failure();
+        // Chrome turns HTTP errors without a body into failures, but they have a response
+        if (isMainFrameNavigation(request) && errorText !== HTTP_ERROR_WITHOUT_BODY) {
+            navigations.failure = `${errorText} at ${request.url()}`;
         }
     });
     return navigations;
@@ -262,24 +265,21 @@ async function capturePage(page, navigations) {
         await assertPublicUrl(url);
         const proxy = await startEgressProxy();
 
-        chromium.use(stealth);
         // Everything goes through the proxy, loopback included; the flags close the bypasses
         const browser = await chromium.launch({
-            headless: true,
+            // Google Chrome with a real window, like a regular browser
+            channel: "chrome",
+            headless: false,
             chromiumSandbox: true,
             proxy: { server: proxy.url },
             args: [
                 "--disable-quic",
-                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                 "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+                "--window-size=1920,1080",
             ]
         });
-        // No userAgent: the stealth plugin sets one that matches the browser
-        const context = await browser.newContext({
-            viewport: { width: 1920, height: 1080 }
-        });
-        // No popups, as in a regular browser without a click
-        await context.addInitScript(() => { window.open = () => null; });
+        // The window's own size and Chrome's own user agent, as in a regular browser
+        const context = await browser.newContext({ viewport: null });
         const page = await context.newPage();
 
         // Enable ad blocking (before navigating, so it sees every request)
@@ -288,17 +288,28 @@ async function capturePage(page, navigations) {
 
         // Navigate to the URL
         const navigations = trackNavigations(page);
-        await page.goto(url, { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
-        const { screenshot, htmlContent } = await capturePage(page, navigations);
-        if (page.url().startsWith("chrome-error://")) {
-            throw new Error(navigations.failure || "The page navigated to an address that couldn't be loaded");
+        try {
+            await page.goto(url, { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
+        } catch (error) {
+            if (!navigations.response || !String(error?.message).includes(HTTP_ERROR_WITHOUT_BODY)) {
+                throw error;
+            }
+        }
+        let { screenshot, htmlContent } = await capturePage(page, navigations);
+        let finalUrl = page.url();
+        // Chrome shows its own page for network errors, and for HTTP errors without a body (no HTML to save)
+        if (finalUrl.startsWith("chrome-error://")) {
+            if (navigations.failure || !navigations.response) {
+                throw new Error(navigations.failure || "The page navigated to an address that couldn't be loaded");
+            }
+            htmlContent = "";
+            finalUrl = navigations.response.url();
         }
         const proxyError = navigations.response && navigations.response.headers()[PROXY_ERROR_HEADER];
         if (proxyError) {
-            throw new Error(`${decodeURIComponent(proxyError)} at ${page.url()}`);
+            throw new Error(`${decodeURIComponent(proxyError)} at ${finalUrl}`);
         }
         const httpStatus = navigations.response ? navigations.response.status() : null;
-        const finalUrl = page.url();
 
         await browser.close();
         proxy.close();

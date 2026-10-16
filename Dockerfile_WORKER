@@ -4,7 +4,7 @@
 FROM python:3.13.16-slim-bookworm
 
 # -----------------------------------------------------------------------------
-# 2) Install system dependencies required by Node.js, Playwright, etc.
+# 2) Install system dependencies required by Node.js, Chrome, etc.
 # -----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     curl \
@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     libgbm-dev \
     libxshmfence-dev \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
@@ -44,7 +45,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 RUN npm install -g pnpm@12.11.2
 
 # -----------------------------------------------------------------------------
-# 5) Install Node application dependencies (Playwright, etc.)
+# 5) Install Node application dependencies (Patchright, etc.)
 #    NOTE: Since your package.json and pnpm-lock.yaml are in src/, COPY them from there.
 # -----------------------------------------------------------------------------
 WORKDIR /app/src
@@ -54,9 +55,16 @@ COPY src/package*.json src/pnpm-lock.yaml ./
 
 RUN pnpm install --frozen-lockfile
 
-# Install Playwright's browser, only its headless shell
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx playwright install --only-shell chromium
+# Install Google Chrome, which runs with a real window on a virtual display
+RUN npx patchright install chrome \
+    && mkdir -p /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix \
+    && rm -rf /var/lib/apt/lists/*
+ENV DISPLAY=:99
+
+# Keeps WebRTC from sending UDP outside the proxy
+RUN mkdir -p /etc/opt/chrome/policies/managed \
+    && echo '{ "WebRtcIPHandling": "disable_non_proxied_udp" }' > /etc/opt/chrome/policies/managed/webscreencap.json
 
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (TaskIQ, etc.)
@@ -78,9 +86,10 @@ RUN node adblocker.js
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the TaskIQ worker
 #    (You can override this later if you want to run `node` instead)
-#    One task at a time, so Chromium fits in the VM's memory.
+#    One task at a time, so Chrome fits in the VM's memory.
 # -----------------------------------------------------------------------------
-# Without root, so Chromium runs with its sandbox
+# Without root, so Chrome runs with its sandbox
 RUN useradd --create-home pwuser
 USER pwuser
+ENTRYPOINT ["/app/src/display.sh"]
 CMD ["./worker.sh"]

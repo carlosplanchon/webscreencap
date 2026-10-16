@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml/badge.svg)](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml)
 
-A microservice that captures screenshots and HTML content from URLs asynchronously using **FastAPI** and **TaskIQ**, leveraging **Node.js** with **Playwright** (and stealth/extra plugins) behind the scenes. Captured artifacts (screenshots, HTML) are uploaded to an S3-compatible storage (e.g., Tigris, MinIO, AWS S3).
+A microservice that captures screenshots and HTML content from URLs asynchronously using **FastAPI** and **TaskIQ**, leveraging **Node.js** with **Patchright** (a Playwright patched to avoid bot detection) and **Google Chrome** behind the scenes. Captured artifacts (screenshots, HTML) are uploaded to an S3-compatible storage (e.g., Tigris, MinIO, AWS S3).
 
 ---
 
@@ -38,8 +38,8 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 1. **Async Screenshot & HTML Capture**  
    Offload screenshot tasks to a TaskIQ worker for asynchronous processing.
 
-2. **Playwright/Stealth Integration**  
-   Uses [playwright-extra](https://www.npmjs.com/package/playwright-extra) plus stealth plugins to reduce detection.
+2. **Undetected Browsing**  
+   Uses [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-nodejs), a Playwright patched to avoid bot detection, with Google Chrome in a real window, on a virtual display (Xvfb).
 
 3. **Ad-blocking**  
    Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. The filter lists are downloaded and parsed when the worker image is built (the build fails if any of them can't be downloaded).
@@ -51,10 +51,10 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Endpoints require a valid `API_KEY`, sent in the `X-API-Key` header.
 
 6. **SSRF Protection**  
-   The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked. Nothing skips the proxy that enforces it: Chromium runs without QUIC, WebRTC can't send UDP, and it can't resolve host names on its own.
+   The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked. Nothing skips the proxy that enforces it: Chrome runs without QUIC, WebRTC can't send UDP, and it can't resolve host names on its own.
 
 7. **Sandboxed Browser**  
-   The worker runs as a non-root user, so Chromium keeps its sandbox (see [Dockerization](#dockerization)).
+   The worker runs as a non-root user, so Chrome keeps its sandbox (see [Dockerization](#dockerization)).
 
 8. **REST API**  
    Built with **FastAPI**, offering straightforward endpoints to initiate and poll screenshot tasks.
@@ -80,7 +80,8 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 ┌───────┴──────────┐
 │   Node.js        │
 │   (scraper.js)   │
-│  Playwright etc. │
+│ Patchright,      │
+│ Google Chrome    │
 └───────┬──────────┘
         │
         ▼
@@ -90,7 +91,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 1. A user sends a `POST` request to the FastAPI endpoint, with the `url` in a JSON body and the API key in the `X-API-Key` header.
 2. FastAPI validates the API key and the URL (only `http`/`https`), then queues a TaskIQ task in Redis.
 3. The TaskIQ worker runs the Node.js script (`scraper.js`) to:
-    - Launch a headless Chromium with stealth & ad-block, behind a local proxy (`egress_proxy.js`) that only lets it reach public addresses.
+    - Launch Google Chrome with ad-block, behind a local proxy (`egress_proxy.js`) that only lets it reach public addresses.
     - Capture a full-page screenshot & HTML.
     - Upload both artifacts to S3-compatible storage.
 4. The worker stores a result with the file URLs in Redis.
@@ -106,7 +107,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 - **npm** / **pnpm** / **yarn** for installing Node dependencies
 - **Redis** 6.2 or later, for the task queue and the results
 - **S3-Compatible Object Storage** (e.g., Tigris, MinIO, AWS S3) credentials
-- Additional system dependencies needed for Playwright (detailed below)
+- **Google Chrome**, and a display for its window (on a server, a virtual one such as Xvfb)
 
 ---
 
@@ -133,8 +134,9 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
      ```bash
      cd src
      pnpm install --frozen-lockfile
-     pnpm playwright install chromium
+     pnpm patchright install chrome
      ```
+     `patchright install chrome` installs Google Chrome on Debian and Ubuntu; elsewhere, install Chrome as usual.
 
 4. **Set up or ensure you have a running Redis**.
 
@@ -194,6 +196,7 @@ uv run ./worker.sh
 
 Where:
 - `worker.sh` checks that Redis answers, then starts the TaskIQ worker with the broker in `tasks.py` (`taskiq worker tasks:broker`), one capture at a time.
+- Chrome opens its window on your display. Without one, run it on a virtual display: `xvfb-run -s "-screen 0 1920x1080x24" uv run ./worker.sh`.
 
 Now you have the API and the worker up and running.
 
@@ -230,7 +233,7 @@ curl -X POST "http://127.0.0.1:31337/webscreencap/api/task/screenshot" \
 ```
 - `id` is the task identifier.
 - If the URL or one of its redirects points to a non-public address (localhost, a private network, a cloud metadata endpoint...), the task fails. Anything else the page loads is held to the same rule and blocked.
-- Screenshots are full-page but cut at 1920×8192 px, so that very long pages don't run the worker out of memory (`MAX_SCREENSHOT_WIDTH` / `MAX_SCREENSHOT_HEIGHT` in `scraper.js`).
+- Screenshots are full-page, as Chrome renders the page in a 1920×1080 window, but cut at 8192 px of height, so that very long pages don't run the worker out of memory (`MAX_SCREENSHOT_WIDTH` / `MAX_SCREENSHOT_HEIGHT` in `scraper.js`).
 - Before the capture, the page is scrolled down to the bottom, one screen at a time (for up to 30 s), and then given up to 3 s to finish loading the scripts, data and images that the scroll asked for. So the HTML has the content that the page loads lazily, even below the screenshot.
 - The page is captured once it loads, or after 10 s if some of its resources never finish loading (unless one of them keeps the page from rendering at all, as a stalled script in its `<head>` does: then the task fails). Redirects the page makes by itself (JavaScript, meta refresh) are followed, up to 5, and a page that keeps navigating after that is captured without scrolling; if a redirect leads to an address that can't be loaded, the task fails.
 
@@ -328,15 +331,14 @@ The captured files stay in moto's memory, and their URLs point to `10.250.250.10
 
 ### Installing Dependencies with `dependencies.sh`
 
-If you are on an **Arch Linux** (or derivative) system, `src/dependencies.sh` installs the system packages for Node.js and Playwright's Chromium, then the Node modules exactly as pinned in `pnpm-lock.yaml`:
+If you are on an **Arch Linux** (or derivative) system, `src/dependencies.sh` installs the system packages for Node.js and a virtual display (Xvfb), then the Node modules exactly as pinned in `pnpm-lock.yaml`. Google Chrome isn't in Arch's official repositories: install it from the AUR (`google-chrome`).
 
 ```bash
 sudo pacman -S nodejs npm pnpm --noconfirm --needed
-# Required by Playwright's Chromium.
-sudo pacman -S atk at-spi2-atk libcups libxkbcommon libxcomposite alsa-lib --noconfirm --needed
+# A virtual display, for machines without one
+sudo pacman -S xorg-server-xvfb --noconfirm --needed
 
 pnpm install --frozen-lockfile
-pnpm playwright install chromium
 ```
 
 You can adapt this script for other package managers / distributions as needed.
@@ -370,7 +372,7 @@ Besides the service itself, that stack has a "public" test website and an intern
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
 - **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load.
 - **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that a Ctrl+C lets the capture in progress finish, that finished tasks leave the queue, and that a task that already has a result, or that waited too long, doesn't run again.
-- **Captures**: pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap, lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL, the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chromium runs without root and with its sandbox.
+- **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap, lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the HTTP status and final URL (also of HTTP errors without a body), the file URL settings, that failed downloads of the ad-blocking lists fail (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 
@@ -380,7 +382,9 @@ They only use the standard libraries (`unittest` and `node:test`), so they need 
 
 We provide two separate Dockerfiles to handle the **worker** and the **Main API** separately. This allows you to deploy them as separate services/containers.
 
-The worker runs as `pwuser`, so Chromium can keep its sandbox. Docker's default seccomp profile doesn't let it create the user namespaces the sandbox needs, so the worker's containers use `seccomp_profile.json`: Docker's default profile plus the user namespace rule from [Playwright's docs](https://playwright.dev/docs/docker). The compose files already pass it; with `docker run`, add `--security-opt seccomp=seccomp_profile.json`. Fly runs the image as a VM instead of a Docker container, so the profile doesn't apply there.
+The worker image runs Google Chrome with a real window: `display.sh` starts a virtual display (Xvfb) for it and then runs the command. Chrome has no Linux build for ARM, so the image only builds for amd64, and it gets the Chrome version of the day it's built: to update Chrome, rebuild it without the cache (`docker compose build --no-cache worker`).
+
+The worker runs as `pwuser`, so Chrome can keep its sandbox. Docker's default seccomp profile doesn't let it create the user namespaces the sandbox needs, so the worker's containers use `seccomp_profile.json`: Docker's default profile plus the user namespace rule from [Playwright's docs](https://playwright.dev/docs/docker). The compose files already pass it; with `docker run`, add `--security-opt seccomp=seccomp_profile.json`. Fly runs the image as a VM instead of a Docker container, so the profile doesn't apply there.
 
 ### Dockerfile for the Worker
 
@@ -393,7 +397,7 @@ The worker runs as `pwuser`, so Chromium can keep its sandbox. Docker's default 
 FROM python:3.13.16-slim-bookworm
 
 # -----------------------------------------------------------------------------
-# 2) Install system dependencies required by Node.js, Playwright, etc.
+# 2) Install system dependencies required by Node.js, Chrome, etc.
 # -----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     curl \
@@ -419,6 +423,7 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     libgbm-dev \
     libxshmfence-dev \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
@@ -433,7 +438,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 RUN npm install -g pnpm@12.11.2
 
 # -----------------------------------------------------------------------------
-# 5) Install Node application dependencies (Playwright, etc.)
+# 5) Install Node application dependencies (Patchright, etc.)
 #    NOTE: Since your package.json and pnpm-lock.yaml are in src/, COPY them from there.
 # -----------------------------------------------------------------------------
 WORKDIR /app/src
@@ -443,9 +448,16 @@ COPY src/package*.json src/pnpm-lock.yaml ./
 
 RUN pnpm install --frozen-lockfile
 
-# Install Playwright's browser, only its headless shell
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx playwright install --only-shell chromium
+# Install Google Chrome, which runs with a real window on a virtual display
+RUN npx patchright install chrome \
+    && mkdir -p /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix \
+    && rm -rf /var/lib/apt/lists/*
+ENV DISPLAY=:99
+
+# Keeps WebRTC from sending UDP outside the proxy
+RUN mkdir -p /etc/opt/chrome/policies/managed \
+    && echo '{ "WebRtcIPHandling": "disable_non_proxied_udp" }' > /etc/opt/chrome/policies/managed/webscreencap.json
 
 # -----------------------------------------------------------------------------
 # 6) Install Python application dependencies (TaskIQ, etc.)
@@ -467,11 +479,12 @@ RUN node adblocker.js
 # -----------------------------------------------------------------------------
 # 7) Default CMD: Start the TaskIQ worker
 #    (You can override this later if you want to run `node` instead)
-#    One task at a time, so Chromium fits in the VM's memory.
+#    One task at a time, so Chrome fits in the VM's memory.
 # -----------------------------------------------------------------------------
-# Without root, so Chromium runs with its sandbox
+# Without root, so Chrome runs with its sandbox
 RUN useradd --create-home pwuser
 USER pwuser
+ENTRYPOINT ["/app/src/display.sh"]
 CMD ["./worker.sh"]
 ```
 
@@ -508,7 +521,7 @@ fly deploy -c fly_worker.toml
 fly deploy -c fly_main_api.toml
 ```
 
-- **`fly_worker.toml`** is your Fly configuration for the worker. Fly waits `kill_timeout` seconds before killing a machine it stops (on deploys, for instance). The default of 5 s would lose the capture in progress, so the worker gets 200 s, longer than a capture can take:
+- **`fly_worker.toml`** is your Fly configuration for the worker. Fly waits `kill_timeout` seconds before killing a machine it stops (on deploys, for instance). The default of 5 s would lose the capture in progress, so the worker gets 200 s, longer than a capture can take. Chrome can take more than 1 GB on heavy pages, so the VM has 2 GB, the most for a shared CPU:
   ```toml
   app = 'webscreencap-taskiq-worker'
   primary_region = 'iad'
@@ -518,7 +531,7 @@ fly deploy -c fly_main_api.toml
     dockerfile = 'Dockerfile_WORKER'
 
   [[vm]]
-    memory = '1gb'
+    memory = '2gb'
     cpu_kind = 'shared'
     cpus = 1
   ```

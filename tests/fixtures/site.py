@@ -68,6 +68,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "<h1>LANDED</h1>")
         if url.path == "/missing":
             return self._send(404, "<h1>missing</h1>")
+        if url.path == "/empty-error":
+            return self._send(500, "")
+        if url.path == "/whoami":
+            # What the browser tells sites about itself
+            headers = json.dumps({name: self.headers.get(name) for name in ("User-Agent", "Accept-Language")})
+            return self._send(200, f'<pre id="headers">{headers}</pre><pre id="browser"></pre><script>'
+                                   'document.getElementById("browser").textContent = JSON.stringify({'
+                                   ' webdriver: navigator.webdriver, userAgent: navigator.userAgent,'
+                                   ' innerWidth, innerHeight, outerWidth, outerHeight });</script>')
         if url.path == "/redirect":
             return self._send(302, "", {"Location": query["to"][0]})
         if url.path == "/mechanisms":

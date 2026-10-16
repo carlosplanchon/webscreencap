@@ -1,5 +1,7 @@
-"""Captures: page loading, size cap, fonts, encoding, the file URL settings, ad blocking and the sandbox."""
+"""Captures: the browser, page loading, size cap, fonts, encoding, the file URL settings, ad blocking and the sandbox."""
+import json
 import os
+import re
 import subprocess
 import time
 import unittest
@@ -9,6 +11,20 @@ from helpers import (INTERNAL, SCRAPER, SITE, SITE_CONTROL, fixture_stats, http,
 
 
 class CaptureTest(unittest.TestCase):
+    def test_browser_is_chrome_with_a_real_window(self):
+        code, result, _, _ = run_scraper(SITE + "/whoami")
+        self.assertEqual(code, 0, result)
+        _, _, html = http("GET", result["htmlUrl"])
+        headers, browser = (json.loads(re.search(rb'<pre id="%s">(.*?)</pre>' % name, html).group(1))
+                            for name in (b"headers", b"browser"))
+        for user_agent in (headers["User-Agent"], browser["userAgent"]):
+            self.assertIn("Chrome/", user_agent)
+            self.assertNotIn("Headless", user_agent)
+        self.assertTrue(headers["Accept-Language"].startswith("en-US"))
+        self.assertIs(browser["webdriver"], False)
+        # The toolbar takes some of the window
+        self.assertGreater(browser["outerHeight"], browser["innerHeight"])
+
     def test_page_with_constant_traffic_loads(self):
         # It never goes network-idle
         code, result, _, seconds = run_scraper(SITE + "/polling")
@@ -65,13 +81,16 @@ class CaptureTest(unittest.TestCase):
             ("/redirect?to=http://site:8099/", "ECONNREFUSED"),
         ):
             with self.subTest(path=path):
-                code, result, _, _ = run_scraper(SITE + path)
+                code, result, _, seconds = run_scraper(SITE + path)
                 self.assertEqual(code, 1, result)
                 self.assertIn(message, result["error"])
+                # Chrome's error page retries the navigation by itself, which isn't waited for
+                self.assertLess(seconds, 20)
 
     def test_http_status_and_final_url(self):
         for path, status, final_path in (
             ("/missing", 404, "/missing"),
+            ("/empty-error", 500, "/empty-error"),
             ("/redirect?to=/landed", 200, "/landed"),
             ("/js-redirect?ms=300", 200, "/landed"),
         ):
@@ -80,7 +99,7 @@ class CaptureTest(unittest.TestCase):
                 self.assertEqual(code, 0, result)
                 self.assertEqual((result["httpStatus"], result["finalUrl"]), (status, SITE + final_path))
 
-    def test_chromium_runs_with_its_sandbox(self):
+    def test_chrome_runs_with_a_window_and_its_sandbox(self):
         self.assertNotEqual(os.getuid(), 0)
         scraper = subprocess.Popen(["node", SCRAPER, SITE + "/hanging-image"],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -90,8 +109,12 @@ class CaptureTest(unittest.TestCase):
                 self.assertLess(time.time(), deadline, "no renderer started")
                 time.sleep(0.2)
             running = processes()
-            browser = next(pid for pid, args in running if "--remote-debugging-pipe" in args and "--type=" not in args)
+            browser, browser_args = next((pid, args) for pid, args in running
+                                         if "--remote-debugging-pipe" in args and "--type=" not in args)
             renderer = next(pid for pid, args in running if "--type=renderer" in args)
+            # Google Chrome itself, not headless
+            self.assertTrue(browser_args.startswith("/opt/google/chrome/"), browser_args)
+            self.assertNotIn("--headless", browser_args)
             self.assertFalse(any("--no-sandbox" in args for _, args in running))
             # The renderer runs in a user namespace of its own
             self.assertNotEqual(os.readlink(f"/proc/{browser}/ns/user"), os.readlink(f"/proc/{renderer}/ns/user"))
@@ -100,12 +123,16 @@ class CaptureTest(unittest.TestCase):
             scraper.wait()
 
     def test_screenshots_are_cut_at_8192_px(self):
-        for height, expected in ((20000, 8192), (500, 1080)):
-            with self.subTest(height=height):
-                code, result, _, _ = run_scraper(f"{SITE}/tall?height={height}")
-                self.assertEqual(code, 0, result)
-                _, _, png = http("GET", result["screenshotUrl"])
-                self.assertEqual(png_size(png), (1920, expected))
+        sizes = {}
+        for height in (20000, 500):
+            code, result, _, _ = run_scraper(f"{SITE}/tall?height={height}")
+            self.assertEqual(code, 0, result)
+            _, _, png = http("GET", result["screenshotUrl"])
+            sizes[height] = png_size(png)
+        self.assertEqual(sizes[20000][1], 8192)
+        # A short page is as tall as the window
+        self.assertLess(sizes[500][1], 1080)
+        self.assertTrue(all(width <= 1920 for width, _ in sizes.values()), sizes)
 
     def test_html_has_the_lazy_content_below_the_screenshot(self):
         code, result, _, seconds = run_scraper(SITE + "/lazy")
