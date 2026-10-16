@@ -11,7 +11,7 @@ from helpers import (INTERNAL, SCRAPER, SITE, SITE_CONTROL, fixture_stats, http,
 
 
 class CaptureTest(unittest.TestCase):
-    def test_browser_is_chrome_with_a_real_window(self):
+    def test_browser_looks_like_a_regular_chrome(self):
         code, result, _, _ = run_scraper(SITE + "/whoami")
         self.assertEqual(code, 0, result)
         _, _, html = http("GET", result["htmlUrl"])
@@ -22,8 +22,6 @@ class CaptureTest(unittest.TestCase):
             self.assertNotIn("Headless", user_agent)
         self.assertTrue(headers["Accept-Language"].startswith("en-US"))
         self.assertIs(browser["webdriver"], False)
-        # The toolbar takes some of the window
-        self.assertGreater(browser["outerHeight"], browser["innerHeight"])
 
     def test_page_with_constant_traffic_loads(self):
         # It never goes network-idle

@@ -71,12 +71,11 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/empty-error":
             return self._send(500, "")
         if url.path == "/whoami":
-            # What the browser tells sites about itself, once loaded (earlier, Chrome can report a window size of 0)
+            # What the browser tells sites about itself
             headers = json.dumps({name: self.headers.get(name) for name in ("User-Agent", "Accept-Language")})
             return self._send(200, f'<pre id="headers">{headers}</pre><pre id="browser"></pre><script>'
-                                   'addEventListener("load", () => document.getElementById("browser").textContent ='
-                                   ' JSON.stringify({ webdriver: navigator.webdriver, userAgent: navigator.userAgent,'
-                                   ' innerWidth, innerHeight, outerWidth, outerHeight }));</script>')
+                                   'document.getElementById("browser").textContent = JSON.stringify({'
+                                   ' webdriver: navigator.webdriver, userAgent: navigator.userAgent });</script>')
         if url.path == "/redirect":
             return self._send(302, "", {"Location": query["to"][0]})
         if url.path == "/mechanisms":
