@@ -10,7 +10,7 @@ from typing import Annotated
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
-from taskiq import AckableMessage, Context, NoResultError, TaskiqDepends
+from taskiq import AckableMessage, Context, NoResultError, TaskiqDepends, TaskiqEvents, TaskiqState
 from taskiq.serializers import JSONSerializer
 from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
 
@@ -21,6 +21,8 @@ SCRAPER_TIMEOUT = 180  # seconds
 RESULT_TTL = 86400  # seconds
 # A capture cut short by a dead worker is retried once
 MAX_ATTEMPTS = 2
+# How often the worker downloads the ad-blocking lists again
+ADBLOCKER_UPDATE_INTERVAL = 86400  # seconds
 
 REDIS_URL = os.environ["REDIS_URL"]
 # Reconnects when Redis has dropped a connection (after a restart, for instance)
@@ -84,6 +86,19 @@ broker = StreamBroker(
     )
 )
 redis = Redis(connection_pool=broker.connection_pool)
+
+
+@broker.on_event(TaskiqEvents.WORKER_STARTUP)
+async def keep_ad_blocking_lists_updated(state: TaskiqState) -> None:
+    async def update():
+        script_path = os.path.join(os.path.dirname(__file__), "adblocker.js")
+        while True:
+            process = await asyncio.create_subprocess_exec("node", script_path, "--update")
+            await process.wait()
+            await asyncio.sleep(ADBLOCKER_UPDATE_INTERVAL)
+
+    # Kept, so that the task isn't garbage collected
+    state.adblocker_updates = asyncio.create_task(update())
 
 
 # Unknown ids have no result either, so the ones handed out are remembered

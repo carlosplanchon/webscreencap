@@ -3,7 +3,7 @@ const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/clien
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("crypto");
 const util = require("util");
-const { STYLE_MARKER, loadBlocker, removeBlockerStyles } = require("./adblocker");
+const { STYLE_MARKER, loadLatestBlocker, removeBlockerStyles } = require("./adblocker");
 const { PROXY_ERROR_HEADER, assertPublicUrl, startEgressProxy } = require("./egress_proxy");
 
 const NAVIGATION_TIMEOUT_MS = 60000;
@@ -335,7 +335,7 @@ async function capturePage(page, navigations) {
         const page = await context.newPage();
 
         // Enable ad blocking (before navigating, so it sees every request)
-        const blocker = await loadBlocker();
+        const blocker = await loadLatestBlocker();
         await blocker.enableBlockingInPage(page);
 
         // Navigate to the URL
