@@ -109,6 +109,19 @@ class Handler(BaseHTTPRequestHandler):
             # An ad slot, which the ad blocker's styles hide, taller than the screenshot
             return self._send(200, "<style>p { color: black; }</style><p>content</p>"
                                    '<ad-slot style="display: block; height: 20000px; background: red">AD</ad-slot>')
+        if url.path == "/shadow":
+            # Open, nested, closed and declarative shadow roots, whose texts the script doesn't spell out
+            return self._send(200, """<!doctype html>
+<html lang="en"><body><h1>shadow</h1>
+<div id="open"></div><div id="closed"></div>
+<div id="declarative"><template shadowrootmode="open"><p>declarative shadow content</p></template></div>
+<script>
+const text = (kind) => kind + " shadow content";
+const open = document.getElementById("open").attachShadow({ mode: "open" });
+open.innerHTML = `<p>${text("open")}</p><span id="inner"></span>`;
+open.getElementById("inner").attachShadow({ mode: "open" }).innerHTML = `<b>${text("nested")}</b>`;
+document.getElementById("closed").attachShadow({ mode: "closed" }).innerHTML = `<p>${text("closed")}</p>`;
+</script></body></html>""")
         if url.path == "/latin1":
             return self._send(200, '<meta charset="iso-8859-1"><p>Año, señal, café</p>', encoding="iso-8859-1")
         if url.path == "/never":

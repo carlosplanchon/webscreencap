@@ -161,6 +161,18 @@ class CaptureTest(unittest.TestCase):
         self.assertIn(b'<meta charset="utf-8">', html)
         self.assertNotIn(b"iso-8859-1", html.lower())
 
+    def test_html_has_the_content_of_open_shadow_roots(self):
+        code, result, _, _ = run_scraper(SITE + "/shadow")
+        self.assertEqual(code, 0, result)
+        _, _, html = http("GET", result["htmlUrl"])
+        self.assertTrue(html.startswith(b'<!DOCTYPE html><html lang="en">'), html[:100])
+        self.assertIn(b'<div id="open"><template shadowrootmode="open"><p>open shadow content</p>', html)
+        self.assertIn(b"<b>nested shadow content</b>", html)
+        self.assertIn(b'<div id="declarative"><template shadowrootmode="open"><p>declarative shadow content</p>'
+                      b"</template></div>", html)
+        # Closed shadow roots can't be read
+        self.assertNotIn(b"closed shadow content", html)
+
     def test_ad_blocker_styles_are_left_out_of_the_html(self):
         code, result, _, _ = run_scraper(SITE + "/ad")
         self.assertEqual(code, 0, result)

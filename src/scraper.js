@@ -187,6 +187,27 @@ function trackNavigations(page) {
     return navigations;
 }
 
+// The page's HTML, with the content of open shadow roots as <template shadowrootmode> elements
+function readHtml() {
+    const roots = [];
+    const collect = (root) => {
+        for (const element of root.querySelectorAll("*")) {
+            if (element.shadowRoot) {
+                roots.push(element.shadowRoot);
+                collect(element.shadowRoot);
+            }
+        }
+    };
+    collect(document);
+    const html = document.documentElement;
+    const doctype = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : "";
+    if (!roots.length || !html || !(document instanceof HTMLDocument)) {
+        return doctype + (html ? html.outerHTML : "");
+    }
+    const tag = html.cloneNode(false).outerHTML.replace(/<\/html>$/, "");
+    return doctype + tag + html.getHTML({ serializableShadowRoots: true, shadowRoots: roots }) + "</html>";
+}
+
 // Cuts a page longer than maxHeight there; returns the styles to put back, or null
 function capHeight(maxHeight) {
     const elements = [document.documentElement, document.body];
@@ -260,7 +281,7 @@ async function capturePage(page, navigations) {
             // The ad blocker's styles hide ads in the screenshot, but the HTML is the page's
             await page.evaluate(removeBlockerStyles, STYLE_MARKER);
             await page.evaluate(declareUtf8);
-            const htmlContent = await page.content();
+            const htmlContent = await page.evaluate(readHtml);
             if (hurry || !navigated()) {
                 return { screenshot, htmlContent };
             }
