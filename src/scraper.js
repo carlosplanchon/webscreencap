@@ -2,6 +2,9 @@ const { chromium } = require("patchright");
 const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const util = require("util");
 const { STYLE_MARKER, loadLatestBlocker, removeBlockerStyles } = require("./adblocker");
 const { PROXY_ERROR_HEADER, assertPublicUrl, startEgressProxy } = require("./egress_proxy");
@@ -18,6 +21,10 @@ const MAX_SCROLL_MS = 30000;
 // Longest wait, after scrolling, for the content the scroll made the page load
 const LAZY_CONTENT_TIMEOUT_MS = 3000;
 const SCRIPT_TIMEOUT_MS = 150000;
+// A file that isn't a page (PDF, image, download...) is saved up to this size
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+// Longest wait for a file that Chrome shows to finish loading, since a live stream never does
+const FILE_TIMEOUT_MS = 60000;
 // Raise them only together with the VM's memory
 const MAX_SCREENSHOT_WIDTH = 1920;
 const MAX_SCREENSHOT_HEIGHT = 8192;
@@ -32,12 +39,13 @@ const s3 = new S3Client({
     }
 });
 
-async function uploadToTigris(bucketName, fileName, fileContent, contentType) {
+async function uploadToTigris(bucketName, fileName, fileContent, contentType, contentDisposition) {
     const params = {
         Bucket: bucketName,
         Key: fileName,
         Body: fileContent,
-        ContentType: contentType
+        ContentType: contentType,
+        ContentDisposition: contentDisposition
     };
 
     try {
@@ -139,9 +147,110 @@ function leavesNoDocument(response) {
         || /^\s*attachment/i.test(response.headers()["content-disposition"] || "");
 }
 
+function mimeType(response) {
+    return (response.headers()["content-type"] || "text/html").split(";")[0].trim().toLowerCase();
+}
+
+// What Chrome renders as a page; anything else is saved as the site sent it
+function isPage(response) {
+    return ["text/html", "application/xhtml+xml"].includes(mimeType(response));
+}
+
+function tooLarge() {
+    return new Error(`The file is larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
+}
+
+// Resolves to the value after ms, without keeping the process alive
+function after(ms, value) {
+    return new Promise((resolve) => setTimeout(resolve, ms, value).unref());
+}
+
+// A response that isn't a page, as the site sent it
+async function readResponse(page, response, downloadsPath) {
+    const type = mimeType(response);
+    // Chrome's viewers (PDF, video, audio) keep the response to themselves, and Chrome keeps no copy of a large one
+    const viewed = type === "application/pdf" || type.startsWith("video/") || type.startsWith("audio/");
+    return (viewed ? null : await response.body().catch(() => null)) ?? downloadAgain(page, response, downloadsPath);
+}
+
+// The file, or null if it doesn't finish loading in time
+async function readFile(page, response, downloadsPath) {
+    if (Number(response.headers()["content-length"]) > MAX_FILE_BYTES) {
+        throw tooLarge();
+    }
+    const reading = readResponse(page, response, downloadsPath);
+    // Left behind if it takes too long
+    reading.catch(() => {});
+    const data = await Promise.race([reading, after(FILE_TIMEOUT_MS, null)]);
+    if (data && data.length > MAX_FILE_BYTES) {
+        throw tooLarge();
+    }
+    return data;
+}
+
+// What the downloads in the directory have written so far
+async function downloadedBytes(directory) {
+    const names = await fs.promises.readdir(directory);
+    const sizes = await Promise.all(names.map(
+        (name) => fs.promises.stat(path.join(directory, name)).then((stats) => stats.size, () => 0)
+    ));
+    return sizes.reduce((total, size) => total + size, 0);
+}
+
+// Chrome writes a download as it arrives, and a site can send one without saying its size; null if it fails
+async function readDownload(download, response, downloadsPath) {
+    const finished = download.path().then((filePath) => ({ filePath }), () => ({ failed: true }));
+    let size = Number(response.headers()["content-length"]) || 0;
+    while (size <= MAX_FILE_BYTES) {
+        const result = await Promise.race([finished, after(100, null)]);
+        if (result?.failed) {
+            return null;
+        }
+        if (result) {
+            if ((await fs.promises.stat(result.filePath)).size > MAX_FILE_BYTES) {
+                throw tooLarge();
+            }
+            return fs.promises.readFile(result.filePath);
+        }
+        size = await downloadedBytes(downloadsPath);
+    }
+    await download.cancel();
+    throw tooLarge();
+}
+
+// Chrome downloads the file again, which the page's Content-Security-Policy doesn't forbid
+async function downloadAgain(page, response, downloadsPath) {
+    const isMainFrame = (frame) => frame === page.mainFrame();
+    const started = Promise.race([
+        page.waitForEvent("download", { timeout: 0 }),
+        // A sandboxed page, or a redirect to another site, navigates instead
+        page.waitForEvent("framenavigated", { predicate: isMainFrame, timeout: 0 }).then(() => null),
+    ]);
+    await page.evaluate((url) => {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "";
+        link.click();
+    }, response.url());
+    const download = await started;
+    const file = download && await readDownload(download, response, downloadsPath);
+    if (!file) {
+        throw new Error("The file couldn't be fetched again");
+    }
+    return file;
+}
+
+// The extension of the file's name, if it looks like one
+function fileExtension(name) {
+    const extension = path.extname(name).toLowerCase();
+    return /^\.[a-z0-9]{1,10}$/.test(extension) ? extension : "";
+}
+
 // Counts the main frame's navigations and keeps the last response and error
 function trackNavigations(page) {
-    const navigations = { started: 0, committed: Promise.resolve(), response: null, failure: null };
+    const navigations = {
+        started: 0, committed: Promise.resolve(), response: null, previous: null, latest: null, failure: null
+    };
     const isMainFrameNavigation = (request) => {
         try {
             return request.isNavigationRequest() && request.frame() === page.mainFrame();
@@ -173,8 +282,19 @@ function trackNavigations(page) {
         }
     });
     page.on("response", (response) => {
-        if (isMainFrameNavigation(response.request()) && !leavesNoDocument(response)) {
-            navigations.response = response;
+        if (isMainFrameNavigation(response.request())) {
+            // Also the responses that load no document
+            navigations.latest = response;
+            if (!leavesNoDocument(response)) {
+                navigations.previous = navigations.response;
+                navigations.response = response;
+            }
+        }
+    });
+    // Chrome also downloads the types it can't show, and then the page stays as it was
+    page.on("download", (download) => {
+        if (navigations.response && navigations.response.url() === download.url().split("#")[0]) {
+            navigations.response = navigations.previous;
         }
     });
     page.on("requestfailed", (request) => {
@@ -261,7 +381,9 @@ async function capturePage(page, navigations) {
         }
 
         try {
-            if (!hurry) {
+            // A file that Chrome shows (PDF, image, JSON...) has nothing to scroll, and no HTML of its own
+            const isFile = navigations.response !== null && !isPage(navigations.response);
+            if (!hurry && !isFile) {
                 requests.clear();
                 await autoScroll(page);
                 await waitForRequests(requests, LAZY_CONTENT_TIMEOUT_MS);
@@ -278,10 +400,13 @@ async function capturePage(page, navigations) {
             if (styles) {
                 await page.evaluate(restoreHeight, styles);
             }
-            // The ad blocker's styles hide ads in the screenshot, but the HTML is the page's
-            await page.evaluate(removeBlockerStyles, STYLE_MARKER);
-            await page.evaluate(declareUtf8);
-            const htmlContent = await page.evaluate(readHtml);
+            let htmlContent = null;
+            if (!isFile) {
+                // The ad blocker's styles hide ads in the screenshot, but the HTML is the page's
+                await page.evaluate(removeBlockerStyles, STYLE_MARKER);
+                await page.evaluate(declareUtf8);
+                htmlContent = await page.evaluate(readHtml);
+            }
             if (hurry || !navigated()) {
                 return { screenshot, htmlContent };
             }
@@ -293,6 +418,50 @@ async function capturePage(page, navigations) {
             }
         }
     }
+}
+
+// The URL as Chrome handles it: a page, a file that Chrome shows, a download, or no content at all
+async function captureUrl(page, url, navigations, downloadsPath) {
+    const downloading = page.waitForEvent("download", { timeout: 0 }).catch(() => null);
+    try {
+        await page.goto(url, { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
+    } catch (error) {
+        const message = String(error?.message);
+        const response = navigations.latest;
+        if (response && message.includes("Download is starting")) {
+            const download = await downloading;
+            const file = await readDownload(download, response, downloadsPath);
+            if (!file) {
+                throw new Error("The download failed");
+            }
+            return { response, file, fileName: download.suggestedFilename(), finalUrl: response.url() };
+        }
+        // Chrome stays on its blank page
+        if (response && [204, 205].includes(response.status())) {
+            return { response, finalUrl: response.url() };
+        }
+        if (!navigations.response || !message.includes(HTTP_ERROR_WITHOUT_BODY)) {
+            throw error;
+        }
+    }
+    const { screenshot, htmlContent } = await capturePage(page, navigations);
+    const { response } = navigations;
+    // Chrome shows its own page for network errors, and for HTTP errors without a body (no HTML to save)
+    if (page.url().startsWith("chrome-error://")) {
+        if (navigations.failure || !response) {
+            throw new Error(navigations.failure || "The page navigated to an address that couldn't be loaded");
+        }
+        return { response, screenshot, html: "", finalUrl: response.url() };
+    }
+    const proxyError = response && response.headers()[PROXY_ERROR_HEADER];
+    if (proxyError) {
+        throw new Error(`${decodeURIComponent(proxyError)} at ${page.url()}`);
+    }
+    if (htmlContent === null) {
+        const file = await readFile(page, response, downloadsPath);
+        return { response, screenshot, file, fileName: new URL(response.url()).pathname, finalUrl: response.url() };
+    }
+    return { response, screenshot, html: htmlContent, finalUrl: page.url() };
 }
 
 (async () => {
@@ -316,6 +485,9 @@ async function capturePage(page, navigations) {
         // Only public http(s) targets, as the proxy does for everything the page loads
         await assertPublicUrl(url);
         const proxy = await startEgressProxy();
+        // Downloads are saved there, so that their size can be watched as they arrive
+        const downloadsPath = fs.mkdtempSync(path.join(os.tmpdir(), "webscreencap-downloads-"));
+        process.on("exit", () => fs.rmSync(downloadsPath, { recursive: true, force: true }));
 
         // Everything goes through the proxy, loopback included; the flags close the bypasses
         const browser = await chromium.launch({
@@ -324,6 +496,7 @@ async function capturePage(page, navigations) {
             headless: false,
             chromiumSandbox: true,
             proxy: { server: proxy.url },
+            downloadsPath,
             args: [
                 "--disable-quic",
                 "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
@@ -338,47 +511,35 @@ async function capturePage(page, navigations) {
         const blocker = await loadLatestBlocker();
         await blocker.enableBlockingInPage(page);
 
-        // Navigate to the URL
-        const navigations = trackNavigations(page);
-        try {
-            await page.goto(url, { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
-        } catch (error) {
-            if (!navigations.response || !String(error?.message).includes(HTTP_ERROR_WITHOUT_BODY)) {
-                throw error;
-            }
-        }
-        let { screenshot, htmlContent } = await capturePage(page, navigations);
-        let finalUrl = page.url();
-        // Chrome shows its own page for network errors, and for HTTP errors without a body (no HTML to save)
-        if (finalUrl.startsWith("chrome-error://")) {
-            if (navigations.failure || !navigations.response) {
-                throw new Error(navigations.failure || "The page navigated to an address that couldn't be loaded");
-            }
-            htmlContent = "";
-            finalUrl = navigations.response.url();
-        }
-        const proxyError = navigations.response && navigations.response.headers()[PROXY_ERROR_HEADER];
-        if (proxyError) {
-            throw new Error(`${decodeURIComponent(proxyError)} at ${finalUrl}`);
-        }
-        const httpStatus = navigations.response ? navigations.response.status() : null;
-
+        const capture = await captureUrl(page, url, trackNavigations(page), downloadsPath);
         await browser.close();
         proxy.close();
 
-        // Generate random hex string for filenames
-        const randomHex = crypto.randomBytes(32).toString("hex");
-        const screenshotFileName = `screenshot-${Date.now()}-${randomHex}.png`;
-        const htmlFileName = `page-${Date.now()}-${randomHex}.html`;
-
-        await uploadToTigris(bucketName, screenshotFileName, screenshot, "image/png");
-        await uploadToTigris(bucketName, htmlFileName, htmlContent, "text/html; charset=utf-8");
+        // Random file names
+        const stamp = `${Date.now()}-${crypto.randomBytes(32).toString("hex")}`;
+        const headers = capture.response ? capture.response.headers() : {};
+        const saved = { screenshotUrl: null, htmlUrl: null, fileUrl: null };
+        if (capture.screenshot) {
+            await uploadToTigris(bucketName, `screenshot-${stamp}.png`, capture.screenshot, "image/png");
+            saved.screenshotUrl = await fileUrl(`screenshot-${stamp}.png`);
+        }
+        if (capture.html !== undefined) {
+            await uploadToTigris(bucketName, `page-${stamp}.html`, capture.html, "text/html; charset=utf-8");
+            saved.htmlUrl = await fileUrl(`page-${stamp}.html`);
+        }
+        if (capture.file) {
+            const fileName = `file-${stamp}${fileExtension(capture.fileName)}`;
+            // How the site sent it, so that it opens or downloads as it did there
+            const disposition = /^[\x20-\x7e]+$/.test(headers["content-disposition"] || "") ? headers["content-disposition"] : undefined;
+            await uploadToTigris(bucketName, fileName, capture.file, headers["content-type"] || "application/octet-stream", disposition);
+            saved.fileUrl = await fileUrl(fileName);
+        }
 
         console.log(JSON.stringify({
-            screenshotUrl: await fileUrl(screenshotFileName),
-            htmlUrl: await fileUrl(htmlFileName),
-            httpStatus,
-            finalUrl
+            ...saved,
+            contentType: headers["content-type"] || null,
+            httpStatus: capture.response ? capture.response.status() : null,
+            finalUrl: capture.finalUrl
         }));
     } catch (error) {
         // Only the first line: Playwright appends its call log below it

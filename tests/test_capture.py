@@ -1,4 +1,5 @@
 """Captures: the browser, page loading, size cap, fonts, encoding, the file URL settings, ad blocking and the sandbox."""
+import glob
 import json
 import os
 import re
@@ -40,9 +41,87 @@ class CaptureTest(unittest.TestCase):
                 self.assertIn(b"visible content", html)
 
     def test_svg_document(self):
+        # An image, saved as a file
         code, result, _, seconds = run_scraper(SITE + "/image.svg")
         self.assertEqual(code, 0, result)
         self.assertLess(seconds, 30)
+        self.assertEqual(http("GET", result["fileUrl"])[2], http("GET", SITE + "/image.svg")[2])
+        self.assertIsNone(result["htmlUrl"])
+
+    def test_files_are_saved_as_the_site_sent_them(self):
+        for path, content_type in (
+            ("/image.png", "image/png"),
+            ("/data.json", "application/json"),
+            ("/text.txt", "text/plain; charset=utf-8"),
+            # Chrome keeps no copy of these, so it downloads them again, which the page's CSP doesn't forbid
+            ("/file.pdf", "application/pdf"),
+            ("/file.pdf?csp=1", "application/pdf"),
+            ("/video.mp4?csp=1", "video/mp4"),
+            ("/big.png?csp=1", "image/png"),
+        ):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                self.assertEqual(result["contentType"], content_type)
+                self.assertIsNone(result["htmlUrl"])
+                _, headers, data = http("GET", result["fileUrl"])
+                self.assertEqual(data, http("GET", SITE + path)[2])
+                self.assertEqual(headers["Content-Type"], content_type)
+                # What Chrome shows
+                self.assertEqual(http("GET", result["screenshotUrl"])[2][:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_page_that_sends_itself_to_a_file(self):
+        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=500&to=/data.json")
+        self.assertEqual(code, 0, result)
+        self.assertEqual((result["finalUrl"], result["contentType"]), (SITE + "/data.json", "application/json"))
+        self.assertEqual(http("GET", result["fileUrl"])[2], b'{"captured": "as sent"}')
+
+    def test_sandboxed_file_that_chrome_keeps_no_copy_of_fails(self):
+        # A sandboxed page can't download it again
+        code, result, _, seconds = run_scraper(SITE + "/video.mp4?sandbox=1")
+        self.assertEqual(code, 1, result)
+        self.assertIn("The file couldn't be fetched again", result["error"])
+        self.assertLess(seconds, 40)
+
+    def test_file_that_never_finishes_loading(self):
+        # A live stream: only its screenshot is saved
+        code, result, _, seconds = run_scraper(SITE + "/live")
+        self.assertEqual(code, 0, result)
+        self.assertEqual((result["htmlUrl"], result["fileUrl"], result["contentType"]), (None, None, "text/plain"))
+        self.assertEqual(http("GET", result["screenshotUrl"])[2][:8], b"\x89PNG\r\n\x1a\n")
+        self.assertLess(seconds, 120)
+
+    def test_downloads_are_saved_without_a_screenshot(self):
+        # Chrome saves them instead of showing anything: the site asks for it, or Chrome can't show the type
+        for path, extension, disposition in (
+            ("/download", ".txt", "attachment; filename=file.txt"),
+            ("/archive.zip", ".zip", None),
+        ):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                self.assertEqual((result["screenshotUrl"], result["htmlUrl"], result["httpStatus"]), (None, None, 200))
+                self.assertTrue(result["fileUrl"].split("?")[0].endswith(extension), result["fileUrl"])
+                _, headers, data = http("GET", result["fileUrl"])
+                self.assertEqual((data, headers["Content-Disposition"]), (http("GET", SITE + path)[2], disposition))
+
+    def test_url_without_content(self):
+        code, result, _, _ = run_scraper(SITE + "/no-content")
+        self.assertEqual(code, 0, result)
+        self.assertEqual((result["screenshotUrl"], result["htmlUrl"], result["fileUrl"]), (None, None, None))
+        self.assertEqual(result["httpStatus"], 204)
+
+    def test_files_over_50_mb_fail(self):
+        # A download that doesn't say its size is stopped once it passes 50 MB
+        for path in ("/big", "/endless"):
+            with self.subTest(path=path):
+                before = set(glob.glob("/tmp/webscreencap-downloads-*"))
+                code, result, _, seconds = run_scraper(SITE + path)
+                self.assertEqual(code, 1, result)
+                self.assertIn("The file is larger than 50 MB", result["error"])
+                self.assertLess(seconds, 60)
+                # Nothing is left of it
+                self.assertEqual(set(glob.glob("/tmp/webscreencap-downloads-*")) - before, set())
 
     def test_pages_that_redirect_by_themselves(self):
         for path in ("/js-redirect?ms=1500", "/meta-refresh?s=1", "/js-redirect?ms=2000&height=20000"):
@@ -59,13 +138,14 @@ class CaptureTest(unittest.TestCase):
 
     def test_navigations_that_load_no_document(self):
         # The page stays as it was, with its own status
-        for to in ("/no-content", "/download"):
+        for to in ("/no-content", "/download", "/archive.zip", "/archive.zip%23part"):
             with self.subTest(to=to):
                 path = f"/js-redirect?ms=500&to={to}"
                 code, result, _, seconds = run_scraper(SITE + path)
                 self.assertEqual(code, 0, result)
                 self.assertLess(seconds, 30)
                 self.assertEqual((result["httpStatus"], result["finalUrl"]), (200, SITE + path))
+                self.assertEqual((result["contentType"], result["fileUrl"]), ("text/html; charset=utf-8", None))
 
     def test_page_that_keeps_reloading(self):
         code, result, _, seconds = run_scraper(SITE + "/reloading")
@@ -96,6 +176,7 @@ class CaptureTest(unittest.TestCase):
                 code, result, _, _ = run_scraper(SITE + path)
                 self.assertEqual(code, 0, result)
                 self.assertEqual((result["httpStatus"], result["finalUrl"]), (status, SITE + final_path))
+                self.assertIsNone(result["fileUrl"])
 
     def test_chrome_runs_with_a_window_and_its_sandbox(self):
         self.assertNotEqual(os.getuid(), 0)

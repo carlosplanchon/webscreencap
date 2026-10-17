@@ -168,7 +168,7 @@ async def capture_screenshot_and_html(url: str, context: Annotated[Context, Task
             await process.wait()
 
     result = read_result(stdout.decode(errors="replace"))
-    if process.returncode != 0 or "screenshotUrl" not in result:
+    if process.returncode != 0 or "finalUrl" not in result:
         # The details (stack traces, ...) stay in the worker logs
         logger.warning(
             "scraper.js failed for %s (exit code %s):\n%s",
@@ -177,11 +177,15 @@ async def capture_screenshot_and_html(url: str, context: Annotated[Context, Task
         raise ScrapeError(result.get("error") or "Failed to process the URL")
 
     # Successful scrape
+    saved = " and ".join(name for name, key in (("screenshot", "screenshotUrl"), ("HTML", "htmlUrl"), ("file", "fileUrl"))
+                         if result.get(key))
     return {
         "status": "success",
-        "message": "Screenshot and HTML processed successfully",
-        "screenshot_url": result["screenshotUrl"],
-        "html_url": result["htmlUrl"],
+        "message": f"{saved[:1].upper()}{saved[1:]} processed successfully" if saved else "The URL sent no content",
+        "screenshot_url": result.get("screenshotUrl"),
+        "html_url": result.get("htmlUrl"),
+        "file_url": result.get("fileUrl"),
+        "content_type": result.get("contentType"),
         "http_status": result.get("httpStatus"),
         "final_url": result.get("finalUrl"),
     }

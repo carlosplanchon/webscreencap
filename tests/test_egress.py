@@ -41,6 +41,14 @@ class EgressTest(unittest.TestCase):
         self.assertIn(f"is not a public address at {INTERNAL}/secret", result["error"])
         self.assertEqual(fixture_stats(INTERNAL_CONTROL)["connections"], before)
 
+    def test_files_fetched_again_are_held_to_the_same_rule(self):
+        # Chrome's PDF viewer keeps the response, so the file is fetched again, and this time it redirects
+        before = fixture_stats(INTERNAL_CONTROL)["connections"]
+        code, result, _, _ = run_scraper(f"{SITE}/once.pdf?token={new_token()}&then={INTERNAL}/secret")
+        self.assertEqual(code, 1, result)
+        self.assertIn("fetched again", result["error"])
+        self.assertEqual(fixture_stats(INTERNAL_CONTROL)["connections"], before)
+
     def test_pages_cannot_reach_internal_addresses(self):
         internal_ip = socket.gethostbyname("internal")
         before = fixture_stats(INTERNAL_CONTROL)["connections"]

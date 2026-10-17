@@ -92,7 +92,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 2. FastAPI validates the API key and the URL (only `http`/`https`), then queues a TaskIQ task in Redis.
 3. The TaskIQ worker runs the Node.js script (`scraper.js`) to:
     - Launch Google Chrome with ad-block, behind a local proxy (`egress_proxy.js`) that only lets it reach public addresses.
-    - Capture a full-page screenshot & HTML.
+    - Capture a full-page screenshot & HTML, or, for a URL that isn't a page (a PDF, an image, a download...), the file as the site sent it.
     - Upload both artifacts to S3-compatible storage.
 4. The worker stores a result with the file URLs in Redis.
 5. The user can retrieve the task status (and result) via another endpoint.
@@ -264,12 +264,17 @@ curl "http://127.0.0.1:31337/webscreencap/api/task_details/abc123" \
     "message": "Screenshot and HTML processed successfully",
     "screenshot_url": "https://screenshots-bucket.<S3-endpoint>/screenshot-<timestamp>-<hash>.png?X-Amz-Algorithm=...&X-Amz-Signature=...",
     "html_url": "https://screenshots-bucket.<S3-endpoint>/page-<timestamp>-<hash>.html?X-Amz-Algorithm=...&X-Amz-Signature=...",
+    "file_url": null,
+    "content_type": "text/html; charset=utf-8",
     "http_status": 200,
     "final_url": "https://example.com/"
   }
 }
 ```
-- `http_status` is the HTTP status of the captured page, and `final_url` its address after redirects, including the ones the page makes by itself. Error pages (`404`, `500`...) are captured too, so check `http_status`.
+- `screenshot_url` is a PNG of what Chrome shows, and `html_url` the page's HTML, saved as UTF-8 after its scripts ran.
+- A URL that isn't a page (`text/html` or `application/xhtml+xml`), such as a PDF, an image, JSON, text or SVG, has no `html_url`: `file_url` is the file exactly as the site sent it, with its `Content-Type`, and `screenshot_url` is how Chrome shows it. Files over 50 MB fail the task. Chrome keeps no copy of PDFs, video, audio or large files, so it downloads those again: a URL that only answers once, or a sandboxed one (`Content-Security-Policy: sandbox`), fails there. A file that doesn't finish loading in 60 s, such as a live stream, is left out, and only its screenshot is saved.
+- A URL that Chrome downloads (`Content-Disposition: attachment`, or a type it can't show) has no `screenshot_url` either, and its file keeps the site's `Content-Disposition`, so it downloads with the same name. When a page navigates by itself to a file that Chrome shows, the file is what's captured; a download that a page starts by itself is left out, and the page is captured.
+- `content_type` is the `Content-Type` the site sent, `http_status` its HTTP status, and `final_url` its address after redirects, including the ones the page makes by itself. Error pages (`404`, `500`...) are captured too, so check `http_status`. A response without content (`204`) has no screenshot, HTML or file, and its `message` says so.
 - While the task waits or runs, `status` is `PENDING` and `result` is `null`.
 - If the capture fails, `status` is `FAILURE` and `result.message` says why; the details stay in the worker logs:
   ```json
@@ -371,9 +376,9 @@ tests/run.sh -k redirect   # only the tests whose name matches
 Besides the service itself, that stack has a "public" test website and an internal service that browsers must never reach. The tests cover:
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
-- **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load.
+- **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load, and that a file Chrome downloads again (a PDF) is held to the same rule.
 - **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that a Ctrl+C lets the capture in progress finish, that finished tasks leave the queue, that a dead worker's task is taken over without waiting for another one, and that a task that already has a result, or that waited too long, doesn't run again.
-- **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (and that a longer page is left as it was), lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the content of open shadow roots, the HTTP status and final URL (also of HTTP errors without a body), the file URL settings, that the ad blocker's styles are left out of the HTML, that failed downloads of the ad-blocking lists fail and that failed updates keep the lists there were (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
+- **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (and that a longer page is left as it was), lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the content of open shadow roots, the HTTP status and final URL (also of HTTP errors without a body), files that aren't pages (saved as sent; the PDFs, video and large files that Chrome downloads again, also under a strict Content-Security-Policy, and the sandboxed ones that fail; downloads by header or by type, without a screenshot; live streams, with only their screenshot; and the 50 MB cap, also on downloads that don't say their size), the file URL settings, that the ad blocker's styles are left out of the HTML, that failed downloads of the ad-blocking lists fail and that failed updates keep the lists there were (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 

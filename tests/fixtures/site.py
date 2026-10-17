@@ -4,9 +4,12 @@
 The control port reports the connections and requests the site got.
 """
 import json
+import os
+import struct
 import sys
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -16,6 +19,8 @@ CONTROL_PORT = int(sys.argv[3]) if len(sys.argv) > 3 else 8081
 
 lock = threading.Lock()
 stats = {"connections": 0, "requests": []}
+# Tokens of /once.pdf already served
+served = set()
 
 # Every way a page can load a URL; {t} is the target and {k} a per-test token
 MECHANISMS = """<!doctype html>
@@ -39,6 +44,50 @@ window.open("{t}/m/{k}/popup");
 </body></html>"""
 
 
+def pdf(text):
+    """A one-page PDF that shows the text."""
+    stream = f"BT /F1 24 Tf 20 60 Td ({text}) Tj ET".encode()
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R"
+        b" /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    data, offsets = b"%PDF-1.4\n", []
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(data))
+        data += b"%d 0 obj\n%s\nendobj\n" % (number, obj)
+    xref = len(data)
+    data += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    data += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    return data + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+
+
+def png(width, height, rgb=None):
+    """A PNG of a single color, or of random pixels (stored as they are, since they don't compress)."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\x00" + (bytes(rgb) * width if rgb else os.urandom(3 * width)) for _ in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    pixels = zlib.compress(rows, 6 if rgb else 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
+
+
+FILES = {
+    "/file.pdf": (pdf("PDF CONTENT"), "application/pdf"),
+    "/image.png": (png(40, 20, (255, 0, 0)), "image/png"),
+    # Larger than what Chrome keeps of a response
+    "/big.png": (png(4096, 3400), "image/png"),
+    "/data.json": (b'{"captured": "as sent"}', "application/json"),
+    "/text.txt": (b"plain text, as sent", "text/plain; charset=utf-8"),
+    "/video.mp4": (b"\x00\x00\x00\x18ftypmp42" + bytes(1000), "video/mp4"),
+    # A type Chrome can't show, so it downloads it
+    "/archive.zip": (b"PK\x05\x06" + bytes(18), "application/zip"),
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
         # Count every TCP connection, so tunnels that never send plain HTTP count too
@@ -56,6 +105,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_file(self, data, content_type, headers=None):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         with lock:
             stats["requests"].append(self.path)
@@ -64,6 +122,54 @@ class Handler(BaseHTTPRequestHandler):
 
         url = urlparse(self.path)
         query = parse_qs(url.query)
+        if url.path in FILES:
+            # ?csp=1 forbids the page to fetch anything, its own file included, and ?sandbox=1 also to download it
+            csp = "default-src 'none'; sandbox" if "sandbox" in query else "default-src 'none'" if "csp" in query else None
+            return self._send_file(*FILES[url.path], {"Content-Security-Policy": csp} if csp else None)
+        if url.path == "/once.pdf":
+            # The PDF the first time, and a redirect afterwards
+            with lock:
+                again = query["token"][0] in served
+                served.add(query["token"][0])
+            if again:
+                return self._send(302, "", {"Location": query["then"][0]})
+            return self._send_file(*FILES["/file.pdf"])
+        if url.path == "/big":
+            # Larger than the 50 MB cap: a download, since browsers can't show it
+            size = 51 * 1024 * 1024
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            try:
+                for _ in range(size // 65536):
+                    self.wfile.write(bytes(65536))
+            except OSError:
+                pass  # the browser hung up
+            return
+        if url.path == "/endless":
+            # A download that doesn't say its size and never ends, at about 10 MB/s
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            try:
+                while True:
+                    self.wfile.write(bytes(65536))
+                    time.sleep(0.006)
+            except OSError:
+                return  # the browser hung up
+        if url.path == "/live":
+            # A text stream that never ends, like a live feed
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            try:
+                self.wfile.write(b"live\n" * 500)
+                while True:
+                    time.sleep(1)
+                    self.wfile.write(b"live\n")
+            except OSError:
+                return  # the browser hung up
         if url.path == "/landed":
             return self._send(200, "<h1>LANDED</h1>")
         if url.path == "/missing":

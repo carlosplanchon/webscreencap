@@ -55,6 +55,16 @@ class ApiTest(unittest.TestCase):
         status, headers, html = http("GET", result["html_url"])
         self.assertEqual((status, headers["Content-Type"]), (200, "text/html; charset=utf-8"))
         self.assertIn(b"LANDED", html)
+        self.assertEqual((result["file_url"], result["content_type"]), (None, "text/html; charset=utf-8"))
+        self.assertEqual(result["message"], "Screenshot and HTML processed successfully")
+
+    def test_file_is_returned_as_the_site_sent_it(self):
+        details = wait_for_task(submit(SITE + "/file.pdf"))
+        self.assertEqual(details["status"], "SUCCESS", details)
+        result = details["result"]
+        self.assertEqual((result["html_url"], result["content_type"]), (None, "application/pdf"))
+        self.assertEqual(http("GET", result["file_url"])[2], http("GET", SITE + "/file.pdf")[2])
+        self.assertEqual(result["message"], "Screenshot and file processed successfully")
 
     def test_failed_capture_is_a_failure_with_a_short_message(self):
         details = wait_for_task(submit(INTERNAL + "/"))
