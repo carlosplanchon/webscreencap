@@ -60,7 +60,6 @@ RUN npx patchright install chrome \
     && mkdir -p /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix \
     && rm -rf /var/lib/apt/lists/*
-ENV DISPLAY=:99
 
 # Keeps WebRTC from sending UDP outside the proxy
 RUN mkdir -p /etc/opt/chrome/policies/managed \

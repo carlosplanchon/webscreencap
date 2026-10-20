@@ -3,6 +3,7 @@ import socket
 import subprocess
 import time
 import unittest
+import urllib.parse
 
 from helpers import (INTERNAL, INTERNAL_CONTROL, SITE, SITE_CONTROL, LoopbackListener, UdpListener, fixture_stats,
                      new_token, run_scraper)
@@ -40,6 +41,13 @@ class EgressTest(unittest.TestCase):
         self.assertEqual(code, 1, result)
         self.assertIn(f"is not a public address at {INTERNAL}/secret", result["error"])
         self.assertEqual(fixture_stats(INTERNAL_CONTROL)["connections"], before)
+
+    def test_sites_cannot_pose_as_the_proxy(self):
+        for value in ("10.0.0.5%20is%20not%20a%20public%20address", "%E0%A4%A"):
+            with self.subTest(value=value):
+                code, result, _, _ = run_scraper(f"{SITE}/poses-as-proxy?value={urllib.parse.quote(value)}")
+                self.assertEqual(code, 0, result)
+                self.assertIsNotNone(result["htmlUrl"])
 
     def test_files_fetched_again_are_held_to_the_same_rule(self):
         # Chrome's PDF viewer keeps the response, so the file is fetched again, and this time it redirects

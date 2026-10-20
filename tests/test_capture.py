@@ -265,7 +265,7 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(re.findall(rb"<style\b[^>]*>(.*?)</style>", html, re.S), [b"p { color: black; }"])
         self.assertIn(b"<ad-slot", html)
 
-    def test_failed_adblock_list_downloads_fail(self):
+    def test_ad_blocking_list_downloads_and_updates(self):
         process = subprocess.run(
             ["node", "--test", "/app/tests/adblocker.test.js"], capture_output=True, text=True,
         )

@@ -42,7 +42,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Uses [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-nodejs), a Playwright patched to avoid bot detection, with Google Chrome in a real window, on a virtual display (Xvfb).
 
 3. **Ad-blocking**  
-   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. Its styles hide ad slots in the screenshot, but they're left out of the saved HTML. The filter lists are downloaded and parsed when the worker image is built (the build fails if any of them can't be downloaded). The worker downloads them again when it starts and then once a day: captures switch to the new lists once they're complete, and if a download fails, they keep the ones there were.
+   Integrates [@ghostery/adblocker-playwright](https://www.npmjs.com/package/@ghostery/adblocker-playwright) for blocking ads and trackers while capturing pages. Its styles hide ad slots in the screenshot, but they're left out of the saved HTML. The filter lists are downloaded and parsed when the worker image is built (the build fails if any of them can't be downloaded). The worker downloads them again when it starts, unless it did less than a day ago, and then once a day: captures switch to the new lists once they're complete, and if a download fails or takes more than 10 minutes, they keep the ones there were.
 
 4. **S3-Compatible Upload**  
    Captured artifacts are uploaded to Tigris (or any S3-compatible storage configured via environment variables).
@@ -51,7 +51,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
    Endpoints require a valid `API_KEY`, sent in the `X-API-Key` header.
 
 6. **SSRF Protection**  
-   The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked. Nothing skips the proxy that enforces it: Chrome runs without QUIC, WebRTC can't send UDP, and it can't resolve host names on its own.
+   The browser can only reach public addresses: URLs, redirects and anything a page loads that point to localhost, private networks or cloud metadata endpoints are blocked. Nothing skips the proxy that enforces it: Chrome runs without QUIC, it can't resolve host names on its own, and WebRTC can't send UDP, because of a Chrome policy that the worker image installs (captures fail without it, see [Installation](#installation)).
 
 7. **Sandboxed Browser**  
    The worker runs as a non-root user, so Chrome keeps its sandbox (see [Dockerization](#dockerization)).
@@ -107,7 +107,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 - **npm** / **pnpm** / **yarn** for installing Node dependencies
 - **Redis** 6.2 or later, for the task queue and the results
 - **S3-Compatible Object Storage** (e.g., Tigris, MinIO, AWS S3) credentials
-- **Google Chrome**, and a display for its window (on a server, a virtual one such as Xvfb)
+- **Google Chrome**, with the policy that keeps WebRTC behind the egress proxy (see [Installation](#installation)), and a display for its window (on a server, a virtual one: Xvfb)
 
 ---
 
@@ -138,7 +138,16 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
      ```
      `patchright install chrome` installs Google Chrome on Debian and Ubuntu; elsewhere, install Chrome as usual.
 
-4. **Set up or ensure you have a running Redis**.
+4. **Give Chrome the policy that keeps WebRTC behind the egress proxy**, as the worker image does (captures fail without it):
+
+   ```bash
+   sudo mkdir -p /etc/opt/chrome/policies/managed
+   echo '{ "WebRtcIPHandling": "disable_non_proxied_udp" }' | sudo tee /etc/opt/chrome/policies/managed/webscreencap.json
+   ```
+
+   > It applies to every Chrome on the machine, yours included: WebRTC (video calls, for instance) then only uses TCP, unless a proxy supports UDP, and Chrome says it's managed by your organization. The Docker Compose stack doesn't need it (see [Local Development](#local-development)).
+
+5. **Set up or ensure you have a running Redis**.
 
 ---
 
@@ -196,7 +205,7 @@ uv run ./worker.sh
 
 Where:
 - `worker.sh` checks that Redis answers, then starts the TaskIQ worker with the broker in `tasks.py` (`taskiq worker tasks:broker`), one capture at a time.
-- Chrome opens its window on your display. Without one, run it on a virtual display: `xvfb-run -s "-screen 0 1920x1080x24" uv run ./worker.sh`.
+- Chrome opens its window on your display. Without one, run it on a virtual display with `uv run ./display.sh ./worker.sh`: `display.sh` starts Xvfb on a free display, out of the terminal's reach so that a Ctrl+C still lets the capture finish, and stops it when the worker ends.
 
 Now you have the API and the worker up and running.
 
@@ -376,9 +385,9 @@ tests/run.sh -k redirect   # only the tests whose name matches
 Besides the service itself, that stack has a "public" test website and an internal service that browsers must never reach. The tests cover:
 
 - **The API**: the `X-API-Key` header, validation (`401`, `404`, `405`, `422`), results, the format of failures, and that it keeps working after Redis drops its connections (as in a restart).
-- **The egress proxy**: its address policy (`tests/egress_proxy.test.js`, with `node --test`), and that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load, and that a file Chrome downloads again (a PDF) is held to the same rule.
-- **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that a Ctrl+C lets the capture in progress finish, that finished tasks leave the queue, that a dead worker's task is taken over without waiting for another one, and that a task that already has a result, or that waited too long, doesn't run again.
-- **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (and that a longer page is left as it was), lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the content of open shadow roots, the HTTP status and final URL (also of HTTP errors without a body), files that aren't pages (saved as sent; the PDFs, video and large files that Chrome downloads again, also under a strict Content-Security-Policy, and the sandboxed ones that fail; downloads by header or by type, without a screenshot; live streams, with only their screenshot; and the 50 MB cap, also on downloads that don't say their size), the file URL settings, that the ad blocker's styles are left out of the HTML, that failed downloads of the ad-blocking lists fail and that failed updates keep the lists there were (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
+- **The egress proxy**: its address policy, and that captures need the Chrome policy for WebRTC (`tests/egress_proxy.test.js`, with `node --test`), that pages can't reach internal addresses or the loopback through redirects, iframes, `fetch`, workers, WebSockets, WebRTC and so on, while public addresses still load, that a file Chrome downloads again (a PDF) is held to the same rule, and that a site can't make its capture fail by posing as the proxy.
+- **The worker**: that it fails at startup if `REDIS_URL` is missing or Redis doesn't answer, that its display comes back when its container is restarted, that a Ctrl+C lets the capture in progress finish (also on a display of its own, which stops with it), that finished tasks leave the queue and entries that aren't tasks are dropped, that a dead worker's task is taken over without waiting for another one, and that a task that already has a result, or that waited too long, doesn't run again.
+- **Captures**: that the browser is Google Chrome with a real window and no signs of automation, pages that never stop making requests, pages with resources that never finish loading, pages that redirect or reload by themselves, navigations that load no document (`204`, downloads), SVG documents, the 1920×8192 px cap (and that a longer page is left as it was), lazy content below it, the fonts for non-Latin scripts, the HTML's encoding, the content of open shadow roots, the HTTP status and final URL (also of HTTP errors without a body), files that aren't pages (saved as sent; the PDFs, video and large files that Chrome downloads again, also under a strict Content-Security-Policy, and the sandboxed ones that fail; downloads by header or by type, without a screenshot; live streams, with only their screenshot; and the 50 MB cap, also on downloads that don't say their size), the file URL settings, that the ad blocker's styles are left out of the HTML, that failed downloads of the ad-blocking lists fail, that they're downloaded again only once they're a day old, and that failed or stalled updates keep the lists there were (`tests/adblocker.test.js`), and that Chrome runs without root and with its sandbox.
 
 They only use the standard libraries (`unittest` and `node:test`), so they need no extra dependencies. GitHub Actions runs the same script on pushes to `main`, on pull requests and on demand (`.github/workflows/tests.yml`).
 
@@ -388,7 +397,7 @@ They only use the standard libraries (`unittest` and `node:test`), so they need 
 
 We provide two separate Dockerfiles to handle the **worker** and the **Main API** separately. This allows you to deploy them as separate services/containers.
 
-The worker image runs Google Chrome with a real window: `display.sh` starts a virtual display (Xvfb) for it and then runs the command. Chrome has no Linux build for ARM, so the image only builds for amd64, and it gets the Chrome version of the day it's built: to update Chrome, rebuild it without the cache (`docker compose build --no-cache worker`).
+The worker image runs Google Chrome with a real window: `display.sh` starts a virtual display (Xvfb) for it, on a free display number, and then runs the command. Chrome has no Linux build for ARM, so the image only builds for amd64, and it gets the Chrome version of the day it's built: to update Chrome, rebuild it without the cache (`docker compose build --no-cache worker`).
 
 The worker runs as `pwuser`, so Chrome can keep its sandbox. Docker's default seccomp profile doesn't let it create the user namespaces the sandbox needs, so the worker's containers use `seccomp_profile.json`: Docker's default profile plus the user namespace rule from [Playwright's docs](https://playwright.dev/docs/docker). The compose files already pass it; with `docker run`, add `--security-opt seccomp=seccomp_profile.json`. Fly runs the image as a VM instead of a Docker container, so the profile doesn't apply there.
 
@@ -459,7 +468,6 @@ RUN npx patchright install chrome \
     && mkdir -p /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix \
     && rm -rf /var/lib/apt/lists/*
-ENV DISPLAY=:99
 
 # Keeps WebRTC from sending UDP outside the proxy
 RUN mkdir -p /etc/opt/chrome/policies/managed \

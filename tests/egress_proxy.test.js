@@ -1,7 +1,10 @@
-// Address policy of the egress proxy, run with `node --test`
+// Address policy of the egress proxy and its check for WebRTC, run with `node --test`
 const test = require("node:test");
 const assert = require("node:assert");
-const { isPublicAddress, assertPublicUrl } = require("../src/egress_proxy.js");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { isPublicAddress, assertPublicUrl, assertWebRtcPolicy } = require("../src/egress_proxy.js");
 
 test("public addresses", () => {
     for (const address of ["8.8.8.8", "93.184.215.14", "11.250.0.20", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) {
@@ -37,4 +40,18 @@ test("URLs rejected before loading", async () => {
 test("public URLs pass", async () => {
     await assert.doesNotReject(assertPublicUrl("http://93.184.215.14/"));
     await assert.doesNotReject(assertPublicUrl("https://[2606:4700:4700::1111]/"));
+});
+
+test("captures need the Chrome policy that keeps WebRTC behind the proxy", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "chrome-policies-"));
+    const write = (name, content) => fs.writeFileSync(path.join(directory, name), content);
+    const missing = /WebRTC could get past the proxy/;
+    await assert.rejects(assertWebRtcPolicy(path.join(directory, "missing")), missing);
+    write("a.json", '{ "WebRtcIPHandling": "disable_non_proxied_udp" }');
+    await assert.doesNotReject(assertWebRtcPolicy(directory));
+    // Chrome skips the files it can't read, and a later file overrides an earlier one
+    write("b.json", "{ not json");
+    await assert.doesNotReject(assertWebRtcPolicy(directory));
+    write("c.json", '{ "WebRtcIPHandling": "default" }');
+    await assert.rejects(assertWebRtcPolicy(directory), missing);
 });

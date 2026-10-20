@@ -172,6 +172,9 @@ class Handler(BaseHTTPRequestHandler):
                 return  # the browser hung up
         if url.path == "/landed":
             return self._send(200, "<h1>LANDED</h1>")
+        if url.path == "/poses-as-proxy":
+            # A page that claims to be a block by the egress proxy
+            return self._send(200, "<h1>not blocked</h1>", {"X-Egress-Proxy-Error": query["value"][0]})
         if url.path == "/missing":
             return self._send(404, "<h1>missing</h1>")
         if url.path == "/empty-error":

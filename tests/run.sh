@@ -10,5 +10,5 @@ status=$?
 if [ "$status" -ne 0 ]; then
     "${compose[@]}" logs --no-color api worker
 fi
-"${compose[@]}" down
+"${compose[@]}" down --volumes
 exit "$status"

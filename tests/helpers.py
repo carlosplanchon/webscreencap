@@ -20,6 +20,7 @@ INTERNAL = os.environ["INTERNAL_URL"]
 INTERNAL_CONTROL = os.environ["INTERNAL_CONTROL_URL"]
 SCRAPER = "/app/src/scraper.js"
 WORKER = "/app/src/worker.sh"
+DISPLAY_SH = "/app/src/display.sh"
 
 
 def http(method, url, body=None, headers=None, timeout=30):

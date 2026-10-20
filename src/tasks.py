@@ -21,8 +21,8 @@ SCRAPER_TIMEOUT = 180  # seconds
 RESULT_TTL = 86400  # seconds
 # A capture cut short by a dead worker is retried once
 MAX_ATTEMPTS = 2
-# How often the worker downloads the ad-blocking lists again
-ADBLOCKER_UPDATE_INTERVAL = 86400  # seconds
+# How often the worker checks whether the ad-blocking lists are due for an update
+ADBLOCKER_CHECK_INTERVAL = 3600  # seconds
 
 REDIS_URL = os.environ["REDIS_URL"]
 # Reconnects when Redis has dropped a connection (after a restart, for instance)
@@ -51,18 +51,24 @@ class StreamBroker(RedisStreamBroker):
                     count=self.count, block=self.block,
                 )
                 for _, messages in fetched:
-                    for message_id, message in messages:
-                        yield self._ackable(message_id, message)
+                    async for message in self._tasks(messages):
+                        yield message
                 _, claimed, *_ = await redis_conn.xautoclaim(
                     self.queue_name, self.consumer_group_name, self.consumer_name,
                     min_idle_time=self.idle_timeout, count=self.unacknowledged_batch_size,
                 )
-                for message_id, message in claimed:
-                    yield self._ackable(message_id, message)
+                async for message in self._tasks(claimed):
+                    yield message
 
-    def _ackable(self, message_id, message):
-        ack = self._ack_generator(id=message_id, queue_name=self.queue_name)
-        return AckableMessage(data=message[b"data"], ack=ack)
+    async def _tasks(self, entries):
+        for message_id, message in entries:
+            ack = self._ack_generator(id=message_id, queue_name=self.queue_name)
+            # Anything else in the stream would fail the worker every time it's taken over
+            if b"data" not in message:
+                logger.warning("Dropped stream entry %s, which isn't a task", message_id)
+                await ack()
+                continue
+            yield AckableMessage(data=message[b"data"], ack=ack)
 
 
 # One message at a time; a dead worker's message is retried after idle_timeout
@@ -93,9 +99,12 @@ async def keep_ad_blocking_lists_updated(state: TaskiqState) -> None:
     async def update():
         script_path = os.path.join(os.path.dirname(__file__), "adblocker.js")
         while True:
-            process = await asyncio.create_subprocess_exec("node", script_path, "--update")
-            await process.wait()
-            await asyncio.sleep(ADBLOCKER_UPDATE_INTERVAL)
+            try:
+                process = await asyncio.create_subprocess_exec("node", script_path, "--update")
+                await process.wait()
+            except Exception:
+                logger.exception("Could not update the ad-blocking lists")
+            await asyncio.sleep(ADBLOCKER_CHECK_INTERVAL)
 
     # Kept, so that the task isn't garbage collected
     state.adblocker_updates = asyncio.create_task(update())

@@ -1,8 +1,14 @@
-// Proxy for Chromium that only lets pages reach public addresses
+// Proxy for Chrome that only lets pages reach public addresses
 
+const crypto = require("crypto");
 const dns = require("dns");
+const fs = require("fs/promises");
 const http = require("http");
 const net = require("net");
+const path = require("path");
+
+// Where Google Chrome reads the policies it enforces, which only root can install
+const CHROME_POLICY_DIR = "/etc/opt/chrome/policies/managed";
 
 // Special-purpose address ranges (IANA registries). Anything else is public.
 const NON_PUBLIC = new net.BlockList();
@@ -82,7 +88,7 @@ function publicLookup(hostname, options, callback) {
     });
 }
 
-// Rejects URLs before Chromium tries them, with a clearer error
+// Rejects URLs before Chrome tries them, with a clearer error
 async function assertPublicUrl(url) {
     const { protocol, hostname } = new URL(url);
     if (protocol !== "http:" && protocol !== "https:") {
@@ -93,6 +99,22 @@ async function assertPublicUrl(url) {
         await new Promise((resolve, reject) => {
             publicLookup(host, {}, (error) => (error ? reject(error) : resolve()));
         });
+    }
+}
+
+// WebRTC sends UDP on its own, and only a Chrome policy keeps it behind the proxy
+async function assertWebRtcPolicy(directory = CHROME_POLICY_DIR) {
+    let handling;
+    // In alphabetical order, as Chrome reads them: the last file that sets it wins
+    for (const name of (await fs.readdir(directory).catch(() => [])).sort()) {
+        const policies = await fs.readFile(path.join(directory, name), "utf8").then(JSON.parse).catch(() => null);
+        handling = policies?.WebRtcIPHandling ?? handling;
+    }
+    if (handling !== "disable_non_proxied_udp") {
+        throw new Error(
+            `WebRTC could get past the proxy: add a policy file to ${directory}`
+            + ` with {"WebRtcIPHandling": "disable_non_proxied_udp"}`
+        );
     }
 }
 
@@ -116,18 +138,16 @@ function errorStatus(error) {
     return error.code === "ENONPUBLIC" ? 403 : 502;
 }
 
-// Marks the proxy's own answers, so they aren't taken for the sites'
-const PROXY_ERROR_HEADER = "x-egress-proxy-error";
-
-function answerBlocked(res, status, error) {
-    res.writeHead(status, {
-        "content-type": "text/plain",
-        [PROXY_ERROR_HEADER]: encodeURIComponent(error.message),
-    }).end(`Blocked: ${error.message}\n`);
-}
-
 // close() also tears down open tunnels, so they can't keep the process alive
 function startEgressProxy() {
+    // Marks the proxy's own answers, with a name that sites can't guess to send it themselves
+    const errorHeader = `x-egress-proxy-error-${crypto.randomBytes(16).toString("hex")}`;
+    const answerBlocked = (res, status, error) => {
+        res.writeHead(status, {
+            "content-type": "text/plain",
+            [errorHeader]: encodeURIComponent(error.message),
+        }).end(`Blocked: ${error.message}\n`);
+    };
     const sockets = new Set();
     const track = (socket) => {
         sockets.add(socket);
@@ -207,6 +227,7 @@ function startEgressProxy() {
         server.listen(0, "127.0.0.1", () => {
             resolve({
                 url: `http://127.0.0.1:${server.address().port}`,
+                errorHeader,
                 close() {
                     server.close();
                     for (const socket of sockets) {
@@ -218,4 +239,4 @@ function startEgressProxy() {
     });
 }
 
-module.exports = { PROXY_ERROR_HEADER, assertPublicUrl, isPublicAddress, startEgressProxy };
+module.exports = { assertPublicUrl, assertWebRtcPolicy, isPublicAddress, startEgressProxy };

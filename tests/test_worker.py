@@ -8,11 +8,14 @@ import time
 import unittest
 from pathlib import Path
 
-from helpers import (SITE, SITE_CONTROL, WORKER, api, fixture_stats, new_token, processes, redis_command, submit,
-                     wait_for_api, wait_for_task)
+from helpers import (DISPLAY_SH, SITE, SITE_CONTROL, WORKER, api, fixture_stats, new_token, processes, redis_command,
+                     submit, wait_for_api, wait_for_task)
 
 # About 15 s, since one of its images never loads
 LONG_CAPTURE = SITE + "/hanging-image"
+# Connects to the X server in $DISPLAY, as Chrome does
+CONNECT_TO_DISPLAY = ["python", "-c", "import os, socket;"
+                      " socket.socket(socket.AF_UNIX).connect('/tmp/.X11-unix/X' + os.environ['DISPLAY'][1:])"]
 # Queues a message for a consumer that took it 10 minutes ago and never acknowledged it, as a dead worker would
 ABANDON = """
 local id = redis.call('XADD', KEYS[1], '*', 'data', ARGV[1])
@@ -27,6 +30,11 @@ def wait_until(condition, timeout, message):
         if time.time() > deadline:
             raise AssertionError(message)
         time.sleep(0.2)
+
+
+def displays():
+    """PIDs of the virtual displays running in this container."""
+    return {pid for pid, args in processes() if args.startswith("Xvfb ")}
 
 
 class WorkerTest(unittest.TestCase):
@@ -47,10 +55,18 @@ class WorkerTest(unittest.TestCase):
                 self.assertIn(message, process.stderr)
                 self.assertLess(time.time() - start, 30)
 
+    def test_display_comes_back_after_a_restart(self):
+        # Like a container stopped and started again: its display was killed with it, and PIDs start over
+        restart = ["unshare", "--user", "--map-root-user", "--pid", "--fork", DISPLAY_SH]
+        subprocess.run([*restart, "true"], check=True, capture_output=True, timeout=30)
+        process = subprocess.run([*restart, *CONNECT_TO_DISPLAY], capture_output=True, text=True, timeout=30)
+        self.assertEqual(process.returncode, 0, process.stderr)
+
     def test_ctrl_c_lets_the_capture_in_progress_finish(self):
+        before = displays()
         with tempfile.NamedTemporaryFile() as log:
-            # A process group of its own, like a command run from a terminal
-            worker = subprocess.Popen([WORKER], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            # A process group of its own, like a command run from a terminal, on a display of its own
+            worker = subprocess.Popen([DISPLAY_SH, WORKER], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 wait_until(lambda: b"Listening started" in Path(log.name).read_bytes(), 60, "the worker didn't start")
                 # The stack's worker takes one of them, and this one the other
@@ -61,10 +77,18 @@ class WorkerTest(unittest.TestCase):
                     details = wait_for_task(task_id)
                     self.assertEqual(details["status"], "SUCCESS", details)
                 self.assertEqual(worker.wait(timeout=60), 0, Path(log.name).read_text())
+                wait_until(lambda: displays() == before, 10, "the worker's display outlived it")
             finally:
                 if worker.poll() is None:
                     os.killpg(worker.pid, signal.SIGKILL)
                     worker.wait()
+
+    def test_stream_entries_that_arent_tasks_are_dropped(self):
+        # Written by hand, for instance
+        redis_command("XADD", "webscreencap", "*", "not", "a task")
+        details = wait_for_task(submit(SITE + "/landed"))
+        self.assertEqual(details["status"], "SUCCESS", details)
+        wait_until(lambda: redis_command("XLEN", "webscreencap") == b":0\r\n", 10, "the entry stayed in the queue")
 
     def test_finished_tasks_leave_the_queue(self):
         wait_for_task(submit(SITE + "/landed"))

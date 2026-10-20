@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 const util = require("util");
 const { STYLE_MARKER, loadLatestBlocker, removeBlockerStyles } = require("./adblocker");
-const { PROXY_ERROR_HEADER, assertPublicUrl, startEgressProxy } = require("./egress_proxy");
+const { assertPublicUrl, assertWebRtcPolicy, startEgressProxy } = require("./egress_proxy");
 
 const NAVIGATION_TIMEOUT_MS = 60000;
 const HTTP_ERROR_WITHOUT_BODY = "net::ERR_HTTP_RESPONSE_CODE_FAILURE";
@@ -421,7 +421,7 @@ async function capturePage(page, navigations) {
 }
 
 // The URL as Chrome handles it: a page, a file that Chrome shows, a download, or no content at all
-async function captureUrl(page, url, navigations, downloadsPath) {
+async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeader) {
     const downloading = page.waitForEvent("download", { timeout: 0 }).catch(() => null);
     try {
         await page.goto(url, { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
@@ -453,7 +453,7 @@ async function captureUrl(page, url, navigations, downloadsPath) {
         }
         return { response, screenshot, html: "", finalUrl: response.url() };
     }
-    const proxyError = response && response.headers()[PROXY_ERROR_HEADER];
+    const proxyError = response && response.headers()[proxyErrorHeader];
     if (proxyError) {
         throw new Error(`${decodeURIComponent(proxyError)} at ${page.url()}`);
     }
@@ -481,6 +481,8 @@ async function captureUrl(page, url, navigations, downloadsPath) {
         // Bad URL settings fail here, before doing any work
         const bucketName = process.env.BUCKET_NAME;
         const fileUrl = fileUrlBuilder(bucketName);
+        // And so does a Chrome that would let WebRTC get past the proxy
+        await assertWebRtcPolicy();
 
         // Only public http(s) targets, as the proxy does for everything the page loads
         await assertPublicUrl(url);
@@ -511,7 +513,7 @@ async function captureUrl(page, url, navigations, downloadsPath) {
         const blocker = await loadLatestBlocker();
         await blocker.enableBlockingInPage(page);
 
-        const capture = await captureUrl(page, url, trackNavigations(page), downloadsPath);
+        const capture = await captureUrl(page, url, trackNavigations(page), downloadsPath, proxy.errorHeader);
         await browser.close();
         proxy.close();
 
