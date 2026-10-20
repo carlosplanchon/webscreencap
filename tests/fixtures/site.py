@@ -19,7 +19,7 @@ CONTROL_PORT = int(sys.argv[3]) if len(sys.argv) > 3 else 8081
 
 lock = threading.Lock()
 stats = {"connections": 0, "requests": []}
-# Tokens of /once.pdf already served
+# Tokens of the URLs that answer something else the second time, already served
 served = set()
 
 # Every way a page can load a URL; {t} is the target and {k} a per-test token
@@ -170,6 +170,37 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b"live\n")
             except OSError:
                 return  # the browser hung up
+        if url.path == "/reloads-into-download":
+            # A page that reloads itself, when its URL is a download
+            with lock:
+                again = query["token"][0] in served
+                served.add(query["token"][0])
+            if again:
+                return self._send(200, "a file", {"Content-Disposition": "attachment; filename=file.txt"})
+            return self._send(200, "<h1>reloading</h1><script>setTimeout(() => location.reload(), 300);</script>")
+        if url.path == "/slow-html":
+            # HTML whose end arrives 20 s after its start
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"<h1>START</h1>")
+            self.wfile.flush()
+            time.sleep(20)
+            self.wfile.write(b"<h1>END</h1>")
+            return
+        if url.path == "/print":
+            # Prints itself as it loads, as invoices and tickets do
+            return self._send(200, '<body onload="window.print()"><h1>printed</h1></body>')
+        if url.path == "/popup":
+            # Opens a window once the capture is under way, and keeps the capture going with its requests
+            return self._send(200, "<h1>popup opener</h1><script>"
+                                   "setInterval(() => fetch('/ping?' + Date.now()), 300);"
+                                   f"setTimeout(() => window.open('/popup-page?token={query['token'][0]}'), 1500);"
+                                   "</script>")
+        if url.path == "/popup-page":
+            # Tells the site if it's still open 2 s after it loads
+            return self._send(200, "<h1>popup</h1><script>"
+                                   f"setTimeout(() => fetch('/popup-alive?token={query['token'][0]}'), 2000);</script>")
         if url.path == "/landed":
             return self._send(200, "<h1>LANDED</h1>")
         if url.path == "/poses-as-proxy":
@@ -198,12 +229,16 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/tall":
             height = int(query["height"][0])
             page = f'<div style="height: {height}px; background: linear-gradient(red, blue)"></div>'
+            # With declarations that Chrome doesn't know, as stylesheets for other browsers have
             if "styled" in query:
-                page = f'<html style="background-color: white;"><body style="margin: 0px;">{page}</body></html>'
+                page = (f'<html style="background-color: white; -moz-osx-font-smoothing: grayscale;">'
+                        f'<body style="margin: 0px; *zoom: 1;">{page}</body></html>')
             return self._send(200, page)
         if url.path == "/lazy":
-            # Loads part of its content once that part scrolls into view, far below the screenshot's height
-            return self._send(200, '<div style="height: 15000px">top</div><div id="lazy" style="height: 1000px"></div>'
+            # Loads part of its content once that part scrolls into view, far below the screenshot's height;
+            # ?smooth=1 asks for smooth scrolling, as Bootstrap does
+            smooth = "<style>:root { scroll-behavior: smooth; }</style>" if "smooth" in query else ""
+            return self._send(200, smooth + '<div style="height: 15000px">top</div><div id="lazy" style="height: 1000px"></div>'
                                    '<div style="height: 4000px"></div><script>'
                                    'new IntersectionObserver((entries, observer) => {'
                                    ' if (!entries[0].isIntersecting) return;'
@@ -216,8 +251,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "LAZY-CONTENT", content_type="text/plain")
         if url.path == "/ad":
             # An ad slot, which the ad blocker's styles hide, taller than the screenshot
-            return self._send(200, "<style>p { color: black; }</style><p>content</p>"
-                                   '<ad-slot style="display: block; height: 20000px; background: red">AD</ad-slot>')
+            page = "<style>p { color: black; }</style><p>content</p>"
+            if "download" in query:
+                # Below a few screens of content, and a download that starts once the page is scrolled
+                page += ('<div style="height: 3000px"></div><script>addEventListener("scroll",'
+                         ' () => setTimeout(() => location.href = "/download", 300), { once: true });</script>')
+            if "history" in query:
+                # A URL that keeps changing, as single-page apps do, for which the ad blocker adds its styles again
+                page += '<script>setInterval(() => history.replaceState(null, "", "?history=" + Date.now()), 60);</script>'
+            return self._send(200, page + '<ad-slot style="display: block; height: 20000px; background: red">AD</ad-slot>')
         if url.path == "/shadow":
             # Open, nested, closed and declarative shadow roots, whose texts the script doesn't spell out
             return self._send(200, """<!doctype html>
@@ -250,10 +292,11 @@ document.getElementById("closed").attachShadow({ mode: "closed" }).innerHTML = `
         if url.path == "/reloading":
             return self._send(200, '<meta http-equiv="refresh" content="1"><p>reloading</p>')
         if url.path == "/js-redirect":
-            to = query.get("to", ["/landed"])[0]
+            # To each `to`, after its `ms`
             height = int(query.get("height", ["0"])[0])
-            return self._send(200, f'<div style="height: {height}px">before</div>'
-                                   f'<script>setTimeout(() => location.href = "{to}", {int(query["ms"][0])});</script>')
+            redirects = "".join(f'setTimeout(() => location.href = "{to}", {int(ms)});'
+                                for ms, to in zip(query["ms"], query.get("to", ["/landed"])))
+            return self._send(200, f'<div style="height: {height}px">before</div><script>{redirects}</script>')
         if url.path == "/meta-refresh":
             return self._send(200, f'<meta http-equiv="refresh" content="{int(query["s"][0])};url=/landed"><p>before</p>')
         if url.path == "/webrtc":

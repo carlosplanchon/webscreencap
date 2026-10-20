@@ -66,15 +66,6 @@ async function updateBlocker(fetchImpl = fetch, updatedPath = UPDATED_PATH, time
     return true;
 }
 
-// Runs in the page
-function removeBlockerStyles(marker) {
-    for (const style of document.querySelectorAll("style")) {
-        if (style.textContent.startsWith(marker)) {
-            style.remove();
-        }
-    }
-}
-
 if (require.main === module && process.argv[2] === "--update") {
     updateBlocker().then(
         (updated) => updated && console.log(`Adblocker lists updated at ${UPDATED_PATH}`),
@@ -87,4 +78,4 @@ if (require.main === module && process.argv[2] === "--update") {
     loadBlocker().then(() => console.log(`Adblocker engine cached at ${CACHE_PATH}`));
 }
 
-module.exports = { STYLE_MARKER, loadBlocker, loadLatestBlocker, removeBlockerStyles, updateBlocker };
+module.exports = { STYLE_MARKER, loadBlocker, loadLatestBlocker, updateBlocker };

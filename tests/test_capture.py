@@ -40,6 +40,26 @@ class CaptureTest(unittest.TestCase):
                 _, _, html = http("GET", result["htmlUrl"])
                 self.assertIn(b"visible content", html)
 
+    def test_html_that_takes_a_while_to_arrive(self):
+        code, result, _, _ = run_scraper(SITE + "/slow-html")
+        self.assertEqual(code, 0, result)
+        _, _, html = http("GET", result["htmlUrl"])
+        self.assertIn(b"END", html)
+
+    def test_page_that_prints_itself(self):
+        # Chrome's print dialog would hold it until the task times out
+        code, result, _, seconds = run_scraper(SITE + "/print")
+        self.assertEqual(code, 0, result)
+        self.assertLess(seconds, 30)
+
+    def test_popups_are_closed_right_away(self):
+        token = new_token()
+        code, result, _, _ = run_scraper(f"{SITE}/popup?token={token}")
+        self.assertEqual(code, 0, result)
+        requests = fixture_stats(SITE_CONTROL)["requests"]
+        self.assertIn(f"/popup-page?token={token}", requests)
+        self.assertNotIn(f"/popup-alive?token={token}", requests)
+
     def test_svg_document(self):
         # An image, saved as a file
         code, result, _, seconds = run_scraper(SITE + "/image.svg")
@@ -115,13 +135,13 @@ class CaptureTest(unittest.TestCase):
         # A download that doesn't say its size is stopped once it passes 50 MB
         for path in ("/big", "/endless"):
             with self.subTest(path=path):
-                before = set(glob.glob("/tmp/webscreencap-downloads-*"))
+                before = set(glob.glob("/tmp/webscreencap-*"))
                 code, result, _, seconds = run_scraper(SITE + path)
                 self.assertEqual(code, 1, result)
                 self.assertIn("The file is larger than 50 MB", result["error"])
                 self.assertLess(seconds, 60)
-                # Nothing is left of it
-                self.assertEqual(set(glob.glob("/tmp/webscreencap-downloads-*")) - before, set())
+                # Nothing is left of it, nor of Chrome's profile
+                self.assertEqual(set(glob.glob("/tmp/webscreencap-*")) - before, set())
 
     def test_pages_that_redirect_by_themselves(self):
         for path in ("/js-redirect?ms=1500", "/meta-refresh?s=1", "/js-redirect?ms=2000&height=20000"):
@@ -137,8 +157,9 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(result["finalUrl"], "about:blank")
 
     def test_navigations_that_load_no_document(self):
-        # The page stays as it was, with its own status
-        for to in ("/no-content", "/download", "/archive.zip", "/archive.zip%23part"):
+        # The page stays as it was, with its own status, also when they get there through a redirect
+        for to in ("/no-content", "/download", "/archive.zip", "/archive.zip%23part", "/redirect%3Fto%3D/no-content",
+                   "/redirect%3Fto%3D/download"):
             with self.subTest(to=to):
                 path = f"/js-redirect?ms=500&to={to}"
                 code, result, _, seconds = run_scraper(SITE + path)
@@ -146,6 +167,13 @@ class CaptureTest(unittest.TestCase):
                 self.assertLess(seconds, 30)
                 self.assertEqual((result["httpStatus"], result["finalUrl"]), (200, SITE + path))
                 self.assertEqual((result["contentType"], result["fileUrl"]), ("text/html; charset=utf-8", None))
+
+    def test_page_that_reloads_into_a_download(self):
+        path = f"/reloads-into-download?token={new_token()}"
+        code, result, _, _ = run_scraper(SITE + path)
+        self.assertEqual(code, 0, result)
+        self.assertEqual((result["httpStatus"], result["contentType"], result["fileUrl"]),
+                         (200, "text/html; charset=utf-8", None))
 
     def test_page_that_keeps_reloading(self):
         code, result, _, seconds = run_scraper(SITE + "/reloading")
@@ -171,12 +199,16 @@ class CaptureTest(unittest.TestCase):
             ("/empty-error", 500, "/empty-error"),
             ("/redirect?to=/landed", 200, "/landed"),
             ("/js-redirect?ms=300", 200, "/landed"),
+            # After a download, which failed as a navigation
+            ("/js-redirect?ms=300&to=/download&ms=1500&to=/empty-error", 500, "/empty-error"),
         ):
             with self.subTest(path=path):
-                code, result, _, _ = run_scraper(SITE + path)
+                code, result, _, seconds = run_scraper(SITE + path)
                 self.assertEqual(code, 0, result)
                 self.assertEqual((result["httpStatus"], result["finalUrl"]), (status, SITE + final_path))
                 self.assertIsNone(result["fileUrl"])
+                # An error without a body never sends HTML, so it isn't waited for
+                self.assertLess(seconds, 30)
 
     def test_chrome_runs_with_a_window_and_its_sandbox(self):
         self.assertNotEqual(os.getuid(), 0)
@@ -217,7 +249,8 @@ class CaptureTest(unittest.TestCase):
         # It's cut short while it's captured, so that Chrome doesn't draw all of it
         for query, tags in (
             ("", [b"<html>", b"<body>"]),
-            ("&styled=1", [b'<html style="background-color: white;">', b'<body style="margin: 0px;">']),
+            ("&styled=1", [b'<html style="background-color: white; -moz-osx-font-smoothing: grayscale;">',
+                           b'<body style="margin: 0px; *zoom: 1;">']),
         ):
             with self.subTest(query=query):
                 code, result, _, _ = run_scraper(f"{SITE}/tall?height=20000{query}")
@@ -226,11 +259,14 @@ class CaptureTest(unittest.TestCase):
                 self.assertEqual(re.findall(rb"<(?:html|body)\b[^>]*>", html), tags)
 
     def test_html_has_the_lazy_content_below_the_screenshot(self):
-        code, result, _, seconds = run_scraper(SITE + "/lazy")
-        self.assertEqual(code, 0, result)
-        self.assertLess(seconds, 30)
-        _, _, html = http("GET", result["htmlUrl"])
-        self.assertIn(b"LAZY-CONTENT", html)
+        # Also when the page asks for smooth scrolling
+        for path in ("/lazy", "/lazy?smooth=1"):
+            with self.subTest(path=path):
+                code, result, _, seconds = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                self.assertLess(seconds, 30)
+                _, _, html = http("GET", result["htmlUrl"])
+                self.assertIn(b"LAZY-CONTENT", html)
 
     def test_html_is_saved_as_utf8(self):
         code, result, _, _ = run_scraper(SITE + "/latin1")
@@ -255,15 +291,28 @@ class CaptureTest(unittest.TestCase):
         self.assertNotIn(b"closed shadow content", html)
 
     def test_ad_blocker_styles_are_left_out_of_the_html(self):
-        code, result, _, _ = run_scraper(SITE + "/ad")
+        # Also the ones it keeps adding while the HTML is read
+        for path in ("/ad", "/ad?history=1"):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                # They hide the ad in the screenshot, so the page fits in the window
+                _, _, png = http("GET", result["screenshotUrl"])
+                self.assertLess(png_size(png)[1], 1080)
+                # The HTML keeps the page's own style and the ad
+                _, _, html = http("GET", result["htmlUrl"])
+                self.assertEqual(re.findall(rb"<style\b[^>]*>(.*?)</style>", html, re.S), [b"p { color: black; }"])
+                self.assertIn(b"<ad-slot", html)
+
+    def test_ads_stay_hidden_when_the_page_is_captured_again(self):
+        # Its download makes the capture start over, on the same page
+        code, result, _, _ = run_scraper(SITE + "/ad?download=1")
         self.assertEqual(code, 0, result)
-        # They hide the ad in the screenshot, so the page fits in the window
+        # The ad would make it as tall as the cap
         _, _, png = http("GET", result["screenshotUrl"])
-        self.assertLess(png_size(png)[1], 1080)
-        # The HTML keeps the page's own style and the ad
+        self.assertLess(png_size(png)[1], 8192)
         _, _, html = http("GET", result["htmlUrl"])
         self.assertEqual(re.findall(rb"<style\b[^>]*>(.*?)</style>", html, re.S), [b"p { color: black; }"])
-        self.assertIn(b"<ad-slot", html)
 
     def test_ad_blocking_list_downloads_and_updates(self):
         process = subprocess.run(

@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const util = require("util");
-const { STYLE_MARKER, loadLatestBlocker, removeBlockerStyles } = require("./adblocker");
+const { STYLE_MARKER, loadLatestBlocker } = require("./adblocker");
 const { assertPublicUrl, assertWebRtcPolicy, startEgressProxy } = require("./egress_proxy");
 
 const NAVIGATION_TIMEOUT_MS = 60000;
@@ -91,18 +91,15 @@ function fail(message, details) {
 async function autoScroll(page) {
     await page.evaluate(async (maxScrollMs) => {
         await new Promise((resolve) => {
-            var totalHeight = 0;
             var distance = window.innerHeight || 1000; // One screen per step
             var startTime = Date.now();
             var timer = setInterval(() => {
-                // SVG documents have no body
-                var element = document.body || document.documentElement;
-                var scrollHeight = element ? element.scrollHeight : 0;
-                window.scrollBy(0, distance);
-                totalHeight += distance;
-  
-                // Stop at the bottom, or after maxScrollMs.
-                if(totalHeight >= scrollHeight - window.innerHeight || Date.now() - startTime >= maxScrollMs){
+                var before = window.scrollY;
+                // Instant even if the page asks for smooth scrolling, which would fall behind
+                window.scrollBy({ top: distance, behavior: "instant" });
+
+                // Stop at the bottom, where the page doesn't scroll any further, or after maxScrollMs.
+                if(window.scrollY <= before || Date.now() - startTime >= maxScrollMs){
                     clearInterval(timer);
                     resolve();
                 }
@@ -138,6 +135,20 @@ async function waitForRequests(requests, timeoutMs) {
         if (requests.size > 0) {
             quietSince = Date.now();
         }
+    }
+}
+
+// A redirect that Chrome follows, which is a step on the way to the response
+function isRedirect(response) {
+    return [301, 302, 303, 307, 308].includes(response.status()) && response.headers().location !== undefined;
+}
+
+// Until the page's HTML has all arrived, which can take a while, unlike resources that might never finish
+async function waitForHtml(navigations) {
+    const deadline = Date.now() + NAVIGATION_TIMEOUT_MS;
+    const { response } = navigations;
+    while (response && isPage(response) && !navigations.done.has(response.request()) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
     }
 }
 
@@ -240,6 +251,14 @@ async function downloadAgain(page, response, downloadsPath) {
     return file;
 }
 
+// A new Chrome profile with printing off, since a page that prints would wait for the print dialog forever
+function createProfile() {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), "webscreencap-profile-"));
+    fs.mkdirSync(path.join(profile, "Default"));
+    fs.writeFileSync(path.join(profile, "Default", "Preferences"), JSON.stringify({ printing: { enabled: false } }));
+    return profile;
+}
+
 // The extension of the file's name, if it looks like one
 function fileExtension(name) {
     const extension = path.extname(name).toLowerCase();
@@ -249,7 +268,9 @@ function fileExtension(name) {
 // Counts the main frame's navigations and keeps the last response and error
 function trackNavigations(page) {
     const navigations = {
-        started: 0, committed: Promise.resolve(), response: null, previous: null, latest: null, failure: null
+        started: 0, committed: Promise.resolve(), response: null, previous: null, latest: null, failure: null,
+        // The navigation requests whose response has all arrived, or that failed
+        done: new WeakSet(),
     };
     const isMainFrameNavigation = (request) => {
         try {
@@ -279,10 +300,12 @@ function trackNavigations(page) {
         if (isMainFrameNavigation(request) && !request.redirectedFrom() && !page.url().startsWith("chrome-error://")) {
             navigations.started++;
             navigations.committed = settled();
+            // An error of an earlier navigation is no longer the page's
+            navigations.failure = null;
         }
     });
     page.on("response", (response) => {
-        if (isMainFrameNavigation(response.request())) {
+        if (isMainFrameNavigation(response.request()) && !isRedirect(response)) {
             // Also the responses that load no document
             navigations.latest = response;
             if (!leavesNoDocument(response)) {
@@ -293,14 +316,21 @@ function trackNavigations(page) {
     });
     // Chrome also downloads the types it can't show, and then the page stays as it was
     page.on("download", (download) => {
-        if (navigations.response && navigations.response.url() === download.url().split("#")[0]) {
+        const { response } = navigations;
+        // The last response, unless it was already left out, as it is when the page reloads its URL into a download
+        if (response && response === navigations.latest && response.url() === download.url().split("#")[0]) {
             navigations.response = navigations.previous;
         }
     });
+    page.on("requestfinished", (request) => isMainFrameNavigation(request) && navigations.done.add(request));
     page.on("requestfailed", (request) => {
+        if (!isMainFrameNavigation(request)) {
+            return;
+        }
+        navigations.done.add(request);
         const { errorText } = request.failure();
         // Chrome turns HTTP errors without a body into failures, but they have a response
-        if (isMainFrameNavigation(request) && errorText !== HTTP_ERROR_WITHOUT_BODY) {
+        if (errorText !== HTTP_ERROR_WITHOUT_BODY) {
             navigations.failure = `${errorText} at ${request.url()}`;
         }
     });
@@ -308,7 +338,11 @@ function trackNavigations(page) {
 }
 
 // The page's HTML, with the content of open shadow roots as <template shadowrootmode> elements
-function readHtml() {
+function readHtml(blockerMarker) {
+    // The ad blocker's styles hide ads in the screenshot, but the HTML is the page's; they're out only while it's read
+    const styles = [...document.querySelectorAll("style")].filter((style) => style.textContent.startsWith(blockerMarker));
+    const places = styles.map((style) => [style.parentNode, style.nextSibling]);
+    styles.forEach((style) => style.remove());
     const roots = [];
     const collect = (root) => {
         for (const element of root.querySelectorAll("*")) {
@@ -321,11 +355,18 @@ function readHtml() {
     collect(document);
     const html = document.documentElement;
     const doctype = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : "";
+    let content;
     if (!roots.length || !html || !(document instanceof HTMLDocument)) {
-        return doctype + (html ? html.outerHTML : "");
+        content = doctype + (html ? html.outerHTML : "");
+    } else {
+        const tag = html.cloneNode(false).outerHTML.replace(/<\/html>$/, "");
+        content = doctype + tag + html.getHTML({ serializableShadowRoots: true, shadowRoots: roots }) + "</html>";
     }
-    const tag = html.cloneNode(false).outerHTML.replace(/<\/html>$/, "");
-    return doctype + tag + html.getHTML({ serializableShadowRoots: true, shadowRoots: roots }) + "</html>";
+    // The last one first, so that the node each one goes before is back already
+    for (let i = styles.length - 1; i >= 0; i--) {
+        places[i][0].insertBefore(styles[i], places[i][1]);
+    }
+    return content;
 }
 
 // Cuts a page longer than maxHeight there; returns the styles to put back, or null
@@ -347,7 +388,8 @@ function restoreHeight(styles) {
         if (styles[i] === null) {
             element.removeAttribute("style");
         } else {
-            element.style.cssText = styles[i];
+            // As written, with the declarations Chrome doesn't know too
+            element.setAttribute("style", styles[i]);
         }
     });
 }
@@ -372,6 +414,7 @@ async function capturePage(page, navigations) {
         const hurry = i >= MAX_NAVIGATIONS;
 
         await navigations.committed;
+        await waitForHtml(navigations);
         await page.waitForLoadState("load", { timeout: LOAD_TIMEOUT_MS }).catch(() => {});
         if (!hurry) {
             await page.waitForLoadState("networkidle", { timeout: NETWORK_SETTLE_MS }).catch(() => {});
@@ -402,10 +445,8 @@ async function capturePage(page, navigations) {
             }
             let htmlContent = null;
             if (!isFile) {
-                // The ad blocker's styles hide ads in the screenshot, but the HTML is the page's
-                await page.evaluate(removeBlockerStyles, STYLE_MARKER);
                 await page.evaluate(declareUtf8);
-                htmlContent = await page.evaluate(readHtml);
+                htmlContent = await page.evaluate(readHtml, STYLE_MARKER);
             }
             if (hurry || !navigated()) {
                 return { screenshot, htmlContent };
@@ -489,10 +530,10 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
         const proxy = await startEgressProxy();
         // Downloads are saved there, so that their size can be watched as they arrive
         const downloadsPath = fs.mkdtempSync(path.join(os.tmpdir(), "webscreencap-downloads-"));
-        process.on("exit", () => fs.rmSync(downloadsPath, { recursive: true, force: true }));
+        const profile = createProfile();
 
         // Everything goes through the proxy, loopback included; the flags close the bypasses
-        const browser = await chromium.launch({
+        const context = await chromium.launchPersistentContext(profile, {
             // Google Chrome with a real window, like a regular browser
             channel: "chrome",
             headless: false,
@@ -503,18 +544,27 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
                 "--disable-quic",
                 "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
                 "--window-size=1920,1080",
-            ]
+            ],
+            // The window's own size and Chrome's own user agent, as in a regular browser
+            viewport: null,
+        }).finally(() => {
+            // Registered after the launch, so that Patchright stops Chrome before they're removed
+            process.on("exit", () => {
+                fs.rmSync(downloadsPath, { recursive: true, force: true });
+                fs.rmSync(profile, { recursive: true, force: true });
+            });
         });
-        // The window's own size and Chrome's own user agent, as in a regular browser
-        const context = await browser.newContext({ viewport: null });
-        const page = await context.newPage();
+        // The tab Chrome opens with
+        const page = context.pages()[0];
+        // The capture is of the page: what it opens in other windows is closed right away
+        page.on("popup", (popup) => popup.close().catch(() => {}));
 
         // Enable ad blocking (before navigating, so it sees every request)
         const blocker = await loadLatestBlocker();
         await blocker.enableBlockingInPage(page);
 
         const capture = await captureUrl(page, url, trackNavigations(page), downloadsPath, proxy.errorHeader);
-        await browser.close();
+        await context.close();
         proxy.close();
 
         // Random file names
