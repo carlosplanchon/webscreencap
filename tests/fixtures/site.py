@@ -82,10 +82,18 @@ FILES = {
     "/big.png": (png(4096, 3400), "image/png"),
     "/data.json": (b'{"captured": "as sent"}', "application/json"),
     "/text.txt": (b"plain text, as sent", "text/plain; charset=utf-8"),
+    # Text that Chrome doesn't read as the UTF-8 it is, in other encodings, and with a byte order mark
+    "/utf8.txt": ("café ñandú €".encode(), "text/plain"),
+    "/latin1.txt": ("café ñandú".encode("iso-8859-1"), "text/plain; charset=iso-8859-1"),
+    "/latin1.xml": ('<?xml version="1.0" encoding="ISO-8859-1"?><captured>café</captured>'.encode("iso-8859-1"),
+                    "application/xml"),
+    "/bom.json": (b"\xef\xbb\xbf" + '{"captured": "café"}'.encode(), "application/json"),
     "/video.mp4": (b"\x00\x00\x00\x18ftypmp42" + bytes(1000), "video/mp4"),
     # A type Chrome can't show, so it downloads it
     "/archive.zip": (b"PK\x05\x06" + bytes(18), "application/zip"),
 }
+# 2 MB, sent in about 2 s
+SLOW_PDF = pdf("SLOW PDF") + b"%" + b"x" * (2 * 1024 * 1024)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -105,14 +113,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _send_file(self, data, content_type, headers=None):
+    def _send_file(self, data, content_type, headers=None, chunk_delay=0, sized=True):
         self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
+        if content_type:
+            self.send_header("Content-Type", content_type)
+        if sized:
+            self.send_header("Content-Length", str(len(data)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            for start in range(0, len(data), 65536):
+                self.wfile.write(data[start:start + 65536])
+                time.sleep(chunk_delay)
+        except OSError:
+            pass  # the browser hung up
 
     def do_GET(self):
         with lock:
@@ -126,14 +141,49 @@ class Handler(BaseHTTPRequestHandler):
             # ?csp=1 forbids the page to fetch anything, its own file included, and ?sandbox=1 also to download it
             csp = "default-src 'none'; sandbox" if "sandbox" in query else "default-src 'none'" if "csp" in query else None
             return self._send_file(*FILES[url.path], {"Content-Security-Policy": csp} if csp else None)
+        if url.path.startswith("/untyped/"):
+            # Without a Content-Type, so Chrome makes out the type from the content
+            return self._send_file(FILES["/" + url.path.removeprefix("/untyped/")][0], None)
+        if url.path == "/slow.pdf":
+            return self._send_file(SLOW_PDF, "application/pdf", chunk_delay=0.06)
         if url.path == "/once.pdf":
-            # The PDF the first time, and a redirect afterwards
+            # The PDF the first time, and afterwards a redirect, or a page saying that the link has expired
             with lock:
                 again = query["token"][0] in served
                 served.add(query["token"][0])
-            if again:
+            if again and "then" in query:
                 return self._send(302, "", {"Location": query["then"][0]})
-            return self._send_file(*FILES["/file.pdf"])
+            if again:
+                return self._send(200, "<h1>This link has expired</h1>")
+            # ?unsized=1 leaves out its size, as generated files often do
+            return self._send_file(*FILES["/file.pdf"], sized="unsized" not in query)
+        if url.path == "/once.txt":
+            # Text that Chrome doesn't read as the UTF-8 it is, and afterwards other text of the same size
+            with lock:
+                again = query["token"][0] in served
+                served.add(query["token"][0])
+            return self._send_file(f"café {2 if again else 1}".encode(), "text/plain")
+        if url.path == "/two-content-types":
+            # Chrome goes by the last one
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"<h1>two content types</h1>")
+            return
+        if url.path == "/gone-download":
+            # A download link that's gone, which answers an error, still as a download
+            return self._send(404, "<h1>gone</h1>", {"Content-Disposition": "attachment; filename=file.txt"})
+        if url.path == "/stalled-download":
+            # Sends the start of a download, and then nothing
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", "100000")
+            self.end_headers()
+            self.wfile.write(bytes(1000))
+            self.wfile.flush()
+            time.sleep(600)
+            return
         if url.path == "/big":
             # Larger than the 50 MB cap: a download, since browsers can't show it
             size = 51 * 1024 * 1024

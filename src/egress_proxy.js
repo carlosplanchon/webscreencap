@@ -124,14 +124,19 @@ const HOP_BY_HOP_HEADERS = [
     "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
 ];
 
-function endToEndHeaders(headers) {
-    const dropped = new Set(HOP_BY_HOP_HEADERS);
-    for (const name of (headers.connection || "").split(",")) {
-        dropped.add(name.trim().toLowerCase());
+// The rest go as they came (rawHeaders), as [name, value] pairs
+function endToEndHeaders(rawHeaders) {
+    const pairs = [];
+    for (let i = 0; i < rawHeaders.length; i += 2) {
+        pairs.push([rawHeaders[i], rawHeaders[i + 1]]);
     }
-    return Object.fromEntries(
-        Object.entries(headers).filter(([name]) => !dropped.has(name))
-    );
+    const dropped = new Set(HOP_BY_HOP_HEADERS);
+    for (const [name, value] of pairs) {
+        if (name.toLowerCase() === "connection") {
+            value.split(",").forEach((listed) => dropped.add(listed.trim().toLowerCase()));
+        }
+    }
+    return pairs.filter(([name]) => !dropped.has(name.toLowerCase()));
 }
 
 function errorStatus(error) {
@@ -172,13 +177,14 @@ function startEgressProxy() {
             port: target.port || 80,
             method: req.method,
             path: target.pathname + target.search,
-            headers: endToEndHeaders(req.headers),
+            headers: Object.fromEntries(endToEndHeaders(req.rawHeaders)),
             lookup: publicLookup,
             agent: false,
         });
         upstream.on("socket", track);
         upstream.on("response", (upstreamRes) => {
-            res.writeHead(upstreamRes.statusCode, endToEndHeaders(upstreamRes.headers));
+            // With the repeated ones, so that Chrome picks among them as it would without a proxy
+            res.writeHead(upstreamRes.statusCode, endToEndHeaders(upstreamRes.rawHeaders).flat());
             upstreamRes.pipe(res);
         });
         upstream.on("error", (error) => {
@@ -239,4 +245,4 @@ function startEgressProxy() {
     });
 }
 
-module.exports = { assertPublicUrl, assertWebRtcPolicy, isPublicAddress, startEgressProxy };
+module.exports = { assertPublicUrl, assertWebRtcPolicy, endToEndHeaders, isPublicAddress, startEgressProxy };

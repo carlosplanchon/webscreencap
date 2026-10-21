@@ -73,6 +73,11 @@ class CaptureTest(unittest.TestCase):
             ("/image.png", "image/png"),
             ("/data.json", "application/json"),
             ("/text.txt", "text/plain; charset=utf-8"),
+            # Chrome keeps the text it read, which isn't the bytes the site sent, so it downloads them again
+            ("/utf8.txt", "text/plain"),
+            ("/latin1.txt", "text/plain; charset=iso-8859-1"),
+            ("/latin1.xml", "application/xml"),
+            ("/bom.json", "application/json"),
             # Chrome keeps no copy of these, so it downloads them again, which the page's CSP doesn't forbid
             ("/file.pdf", "application/pdf"),
             ("/file.pdf?csp=1", "application/pdf"),
@@ -89,6 +94,32 @@ class CaptureTest(unittest.TestCase):
                 self.assertEqual(headers["Content-Type"], content_type)
                 # What Chrome shows
                 self.assertEqual(http("GET", result["screenshotUrl"])[2][:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_files_without_a_content_type(self):
+        # Saved with the type Chrome makes out from their content
+        for path, content_type in (("/untyped/image.png", "image/png"), ("/untyped/file.pdf", "application/pdf")):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path)
+                self.assertEqual(code, 0, result)
+                self.assertEqual((result["contentType"], result["htmlUrl"]), (None, None))
+                _, headers, data = http("GET", result["fileUrl"])
+                self.assertEqual(data, http("GET", SITE + path)[2])
+                self.assertEqual(headers["Content-Type"], content_type)
+
+    def test_page_with_two_content_types(self):
+        # Chrome goes by the last one
+        code, result, _, _ = run_scraper(SITE + "/two-content-types")
+        self.assertEqual(code, 0, result)
+        self.assertEqual((result["contentType"], result["fileUrl"]), ("text/html; charset=utf-8", None))
+        self.assertIn(b"two content types", http("GET", result["htmlUrl"])[2])
+
+    def test_file_that_changes_when_it_is_fetched_again_fails(self):
+        # The second time it redirects (with no size to tell it apart), answers a page instead, or sends other text
+        for path in ("/once.pdf?then=/landed&unsized=1&token=", "/once.pdf?token=", "/once.txt?token="):
+            with self.subTest(path=path):
+                code, result, _, _ = run_scraper(SITE + path + new_token())
+                self.assertEqual(code, 1, result)
+                self.assertIn("The file changed when it was fetched again", result["error"])
 
     def test_page_that_sends_itself_to_a_file(self):
         code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=500&to=/data.json")
@@ -124,6 +155,27 @@ class CaptureTest(unittest.TestCase):
                 self.assertTrue(result["fileUrl"].split("?")[0].endswith(extension), result["fileUrl"])
                 _, headers, data = http("GET", result["fileUrl"])
                 self.assertEqual((data, headers["Content-Disposition"]), (http("GET", SITE + path)[2], disposition))
+
+    def test_download_of_an_http_error_has_no_content(self):
+        # Chrome doesn't save it
+        code, result, _, seconds = run_scraper(SITE + "/gone-download")
+        self.assertEqual(code, 0, result)
+        self.assertEqual((result["screenshotUrl"], result["htmlUrl"], result["fileUrl"]), (None, None, None))
+        self.assertEqual(result["httpStatus"], 404)
+        self.assertLess(seconds, 30)
+
+    def test_download_that_stalls_fails(self):
+        code, result, _, seconds = run_scraper(SITE + "/stalled-download")
+        self.assertEqual(code, 1, result)
+        self.assertIn("The download didn't finish in 60 s", result["error"])
+        self.assertLess(seconds, 90)
+
+    def test_downloads_that_the_page_starts_are_left_out(self):
+        # Of a file larger than the cap, before the page sends itself to a PDF that Chrome downloads again
+        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=200&to=/big&ms=500&to=/slow.pdf")
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["contentType"], "application/pdf")
+        self.assertEqual(http("GET", result["fileUrl"])[2], http("GET", SITE + "/slow.pdf")[2])
 
     def test_url_without_content(self):
         code, result, _, _ = run_scraper(SITE + "/no-content")

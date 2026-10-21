@@ -1,10 +1,10 @@
-// Address policy of the egress proxy and its check for WebRTC, run with `node --test`
+// Address policy of the egress proxy, the headers it passes on and its check for WebRTC, run with `node --test`
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { isPublicAddress, assertPublicUrl, assertWebRtcPolicy } = require("../src/egress_proxy.js");
+const { isPublicAddress, assertPublicUrl, assertWebRtcPolicy, endToEndHeaders } = require("../src/egress_proxy.js");
 
 test("public addresses", () => {
     for (const address of ["8.8.8.8", "93.184.215.14", "11.250.0.20", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) {
@@ -40,6 +40,14 @@ test("URLs rejected before loading", async () => {
 test("public URLs pass", async () => {
     await assert.doesNotReject(assertPublicUrl("http://93.184.215.14/"));
     await assert.doesNotReject(assertPublicUrl("https://[2606:4700:4700::1111]/"));
+});
+
+test("headers are passed on as they came, except the ones for the proxy's own connection", () => {
+    const sent = [
+        "Content-Type", "text/html", "Connection", "keep-alive, X-Hop", "X-Hop", "1", "Keep-Alive", "timeout=5",
+        "Content-Type", "text/html; charset=utf-8", "Transfer-Encoding", "chunked",
+    ];
+    assert.deepStrictEqual(endToEndHeaders(sent), [["Content-Type", "text/html"], ["Content-Type", "text/html; charset=utf-8"]]);
 });
 
 test("captures need the Chrome policy that keeps WebRTC behind the proxy", async () => {

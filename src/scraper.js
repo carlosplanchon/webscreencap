@@ -158,17 +158,28 @@ function leavesNoDocument(response) {
         || /^\s*attachment/i.test(response.headers()["content-disposition"] || "");
 }
 
+// The Content-Type that Chrome goes by: the last one, when the site sends several
+function contentType(response) {
+    return response.headers()["content-type"]?.split("\n").pop() || null;
+}
+
 function mimeType(response) {
-    return (response.headers()["content-type"] || "text/html").split(";")[0].trim().toLowerCase();
+    return (contentType(response) || "text/html").split(";")[0].trim().toLowerCase();
 }
 
 // What Chrome renders as a page; anything else is saved as the site sent it
+const PAGE_TYPES = ["text/html", "application/xhtml+xml"];
+
 function isPage(response) {
-    return ["text/html", "application/xhtml+xml"].includes(mimeType(response));
+    return PAGE_TYPES.includes(mimeType(response));
 }
 
 function tooLarge() {
     return new Error(`The file is larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
+}
+
+function changed() {
+    return new Error("The file changed when it was fetched again");
 }
 
 // Resolves to the value after ms, without keeping the process alive
@@ -176,20 +187,58 @@ function after(ms, value) {
     return new Promise((resolve) => setTimeout(resolve, ms, value).unref());
 }
 
-// A response that isn't a page, as the site sent it
-async function readResponse(page, response, downloadsPath) {
-    const type = mimeType(response);
+// The size of the file the site sent, when its headers say it
+function sentSize(response) {
+    const { "content-length": size, "content-encoding": encoding } = response.headers();
+    return size === undefined || encoding ? null : Number(size);
+}
+
+// Whether Chrome's copy of a text file still has the site's bytes, since Chrome keeps the text it read from them
+function keptAsSent(response, body, charset) {
+    // What Chrome reads an invalid sequence as
+    if (body.includes("\uFFFD")) {
+        return false;
+    }
+    // Reading them as anything but UTF-8, or without their byte order mark, changes the size
+    const size = sentSize(response);
+    return size === null ? charset === "UTF-8" : size === body.length;
+}
+
+// Whether the bytes read as the text, in that encoding
+function readsAs(bytes, encoding, text) {
+    try {
+        return new TextDecoder(encoding).decode(bytes) === text;
+    } catch {
+        // Encodings that aren't for decoding, such as "replacement"
+        return false;
+    }
+}
+
+// A response that isn't a page, as the site sent it; type is the one Chrome shows it as
+async function readResponse(page, response, type, downloadsPath) {
     // Chrome's viewers (PDF, video, audio) keep the response to themselves, and Chrome keeps no copy of a large one
     const viewed = type === "application/pdf" || type.startsWith("video/") || type.startsWith("audio/");
-    return (viewed ? null : await response.body().catch(() => null)) ?? downloadAgain(page, response, downloadsPath);
+    const body = viewed ? null : await response.body().catch(() => null);
+    // Chrome keeps images as they came, but anything else it shows is text, as it read it
+    const isText = !viewed && (!type.startsWith("image/") || type === "image/svg+xml");
+    const charset = isText ? await page.evaluate(() => document.characterSet) : null;
+    if (body && (!isText || keptAsSent(response, body, charset))) {
+        return body;
+    }
+    const file = await downloadAgain(page, response, downloadsPath);
+    // Its text has to be the one Chrome read the first time, as Chrome reads it or as UTF-8
+    if (body && ![charset, "utf-8"].some((encoding) => readsAs(file, encoding, body.toString()))) {
+        throw changed();
+    }
+    return file;
 }
 
 // The file, or null if it doesn't finish loading in time
-async function readFile(page, response, downloadsPath) {
+async function readFile(page, response, type, downloadsPath) {
     if (Number(response.headers()["content-length"]) > MAX_FILE_BYTES) {
         throw tooLarge();
     }
-    const reading = readResponse(page, response, downloadsPath);
+    const reading = readResponse(page, response, type, downloadsPath);
     // Left behind if it takes too long
     reading.catch(() => {});
     const data = await Promise.race([reading, after(FILE_TIMEOUT_MS, null)]);
@@ -209,10 +258,14 @@ async function downloadedBytes(directory) {
 }
 
 // Chrome writes a download as it arrives, and a site can send one without saying its size; null if it fails
-async function readDownload(download, response, downloadsPath) {
+async function readDownload(download, response, downloadsPath, deadline = Infinity) {
     const finished = download.path().then((filePath) => ({ filePath }), () => ({ failed: true }));
     let size = Number(response.headers()["content-length"]) || 0;
     while (size <= MAX_FILE_BYTES) {
+        if (Date.now() > deadline) {
+            await download.cancel();
+            throw new Error(`The download didn't finish in ${FILE_TIMEOUT_MS / 1000} s`);
+        }
         const result = await Promise.race([finished, after(100, null)]);
         if (result?.failed) {
             return null;
@@ -238,7 +291,8 @@ async function downloadAgain(page, response, downloadsPath) {
         page.waitForEvent("framenavigated", { predicate: isMainFrame, timeout: 0 }).then(() => null),
     ]);
     await page.evaluate((url) => {
-        const link = document.createElement("a");
+        // An HTML link, also in XML and SVG documents
+        const link = document.createElementNS("http://www.w3.org/1999/xhtml", "a");
         link.href = url;
         link.download = "";
         link.click();
@@ -247,6 +301,11 @@ async function downloadAgain(page, response, downloadsPath) {
     const file = download && await readDownload(download, response, downloadsPath);
     if (!file) {
         throw new Error("The file couldn't be fetched again");
+    }
+    // A link that only works once can lead elsewhere the second time, or answer something else
+    const size = sentSize(response);
+    if (download.url().split("#")[0] !== response.url() || (size !== null && size !== file.length)) {
+        throw changed();
     }
     return file;
 }
@@ -424,8 +483,10 @@ async function capturePage(page, navigations) {
         }
 
         try {
+            // As Chrome shows it, which tells a page from a file also when the Content-Type is missing or repeated
+            const type = await page.evaluate(() => document.contentType);
             // A file that Chrome shows (PDF, image, JSON...) has nothing to scroll, and no HTML of its own
-            const isFile = navigations.response !== null && !isPage(navigations.response);
+            const isFile = navigations.response !== null && !PAGE_TYPES.includes(type);
             if (!hurry && !isFile) {
                 requests.clear();
                 await autoScroll(page);
@@ -449,7 +510,7 @@ async function capturePage(page, navigations) {
                 htmlContent = await page.evaluate(readHtml, STYLE_MARKER);
             }
             if (hurry || !navigated()) {
-                return { screenshot, htmlContent };
+                return { screenshot, htmlContent, type };
             }
         } catch (error) {
             // Navigations to about:blank or to prerendered pages send no request first
@@ -470,8 +531,13 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
         const message = String(error?.message);
         const response = navigations.latest;
         if (response && message.includes("Download is starting")) {
-            const download = await downloading;
-            const file = await readDownload(download, response, downloadsPath);
+            // Chrome doesn't save HTTP errors, so it never starts the download
+            if (!response.ok()) {
+                return { response, finalUrl: response.url() };
+            }
+            const deadline = Date.now() + FILE_TIMEOUT_MS;
+            const download = await Promise.race([downloading, after(FILE_TIMEOUT_MS, null)]);
+            const file = download && await readDownload(download, response, downloadsPath, deadline);
             if (!file) {
                 throw new Error("The download failed");
             }
@@ -485,7 +551,10 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
             throw error;
         }
     }
-    const { screenshot, htmlContent } = await capturePage(page, navigations);
+    // A download that the page starts by itself is left out, and it would keep going until the capture ends
+    const leaveOut = (download) => download.cancel().catch(() => {});
+    page.on("download", leaveOut);
+    const { screenshot, htmlContent, type } = await capturePage(page, navigations).finally(() => page.off("download", leaveOut));
     const { response } = navigations;
     // Chrome shows its own page for network errors, and for HTTP errors without a body (no HTML to save)
     if (page.url().startsWith("chrome-error://")) {
@@ -499,8 +568,8 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
         throw new Error(`${decodeURIComponent(proxyError)} at ${page.url()}`);
     }
     if (htmlContent === null) {
-        const file = await readFile(page, response, downloadsPath);
-        return { response, screenshot, file, fileName: new URL(response.url()).pathname, finalUrl: response.url() };
+        const file = await readFile(page, response, type, downloadsPath);
+        return { response, screenshot, file, shownType: type, fileName: new URL(response.url()).pathname, finalUrl: response.url() };
     }
     return { response, screenshot, html: htmlContent, finalUrl: page.url() };
 }
@@ -570,6 +639,7 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
         // Random file names
         const stamp = `${Date.now()}-${crypto.randomBytes(32).toString("hex")}`;
         const headers = capture.response ? capture.response.headers() : {};
+        const type = capture.response ? contentType(capture.response) : null;
         const saved = { screenshotUrl: null, htmlUrl: null, fileUrl: null };
         if (capture.screenshot) {
             await uploadToTigris(bucketName, `screenshot-${stamp}.png`, capture.screenshot, "image/png");
@@ -583,13 +653,15 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
             const fileName = `file-${stamp}${fileExtension(capture.fileName)}`;
             // How the site sent it, so that it opens or downloads as it did there
             const disposition = /^[\x20-\x7e]+$/.test(headers["content-disposition"] || "") ? headers["content-disposition"] : undefined;
-            await uploadToTigris(bucketName, fileName, capture.file, headers["content-type"] || "application/octet-stream", disposition);
+            // Without a Content-Type, with the type Chrome found it to be
+            const fileType = type || capture.shownType || "application/octet-stream";
+            await uploadToTigris(bucketName, fileName, capture.file, fileType, disposition);
             saved.fileUrl = await fileUrl(fileName);
         }
 
         console.log(JSON.stringify({
             ...saved,
-            contentType: headers["content-type"] || null,
+            contentType: type,
             httpStatus: capture.response ? capture.response.status() : null,
             finalUrl: capture.finalUrl
         }));
