@@ -218,6 +218,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b"live\n")
             except OSError:
                 return  # the browser hung up
+        if url.path == "/starts-download":
+            # Starts a download by itself, and then sends itself to `to`
+            return self._send(200, f'<a id="file" href="{query["file"][0]}" download></a><script>'
+                                   'document.getElementById("file").click();'
+                                   f'setTimeout(() => location.href = "{query["to"][0]}", 500);</script>')
         if url.path == "/reloads-into-download":
             # A page that reloads itself, when its URL is a download
             if served_before(query["token"][0]):

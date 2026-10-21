@@ -27,16 +27,52 @@ function checkedFetch(fetchImpl, signal) {
     };
 }
 
+// The frame, with its $$eval done through evaluate, since Patchright's $$eval also goes through the page's world
+function isolated(frame) {
+    return new Proxy(frame, {
+        get(target, property) {
+            if (property === "$$eval") {
+                return (selector, pageFunction) => target.evaluate(
+                    `(${pageFunction})(Array.from(document.querySelectorAll(${JSON.stringify(selector)})))`,
+                );
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    });
+}
+
+function addStyle(content) {
+    const style = document.createElement("style");
+    style.textContent = content;
+    (document.head || document.documentElement).append(style);
+}
+
+// It runs in the page's world all the same, and leaves no element behind
+function addScript(content) {
+    const script = document.createElement("script");
+    script.textContent = content;
+    (document.head || document.documentElement).append(script);
+    script.remove();
+}
+
 async function loadBlocker(fetchImpl = fetch, cachePath = CACHE_PATH) {
     const blocker = await PlaywrightBlocker.fromPrebuiltAdsAndTracking(checkedFetch(fetchImpl), {
         path: cachePath,
         read: fs.readFile,
         write: fs.writeFile,
     });
+    // All from Patchright's isolated world: going through the page's world while the tab turns into a PDF can freeze it
+    const onFrame = blocker.onFrame;
+    blocker.onFrame = (frame) => onFrame(isolated(frame));
     blocker.injectStylesIntoFrame = async (frame, styles) => {
         if (styles.length !== 0) {
-            await frame.addStyleTag({ content: `${STYLE_MARKER}\n${styles}` });
+            await frame.evaluate(addStyle, `${STYLE_MARKER}\n${styles}`);
         }
+    };
+    // Each in a block of its own, as the blocker does, so that its errors and declarations stay there
+    blocker.injectScriptletsIntoFrame = async (frame, scripts) => {
+        await Promise.all(scripts.map((script) => frame.evaluate(addScript, `try{${script}}catch(e){}`)));
     };
     return blocker;
 }

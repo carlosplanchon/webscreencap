@@ -13,6 +13,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 API_URL = os.environ["API_URL"]
+# Where the API is mounted, with its docs
+API_ROOT = API_URL.removesuffix("/api")
 API_KEY = os.environ["API_KEY"]
 SITE = os.environ["SITE_URL"]
 SITE_CONTROL = os.environ["SITE_CONTROL_URL"]
@@ -43,11 +45,10 @@ def api(method, path, body=None, key=API_KEY):
 
 
 def wait_for_api(timeout=60):
-    parts = urllib.parse.urlsplit(API_URL)
     deadline = time.time() + timeout
     while True:
         try:
-            http("GET", f"{parts.scheme}://{parts.netloc}/openapi.json")
+            http("GET", API_ROOT + "/openapi.json")
             return
         except OSError:
             if time.time() > deadline:

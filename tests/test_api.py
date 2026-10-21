@@ -1,8 +1,9 @@
-"""The API end to end: authentication, validation, results, failures and Redis reconnections."""
+"""The API end to end: authentication, validation, results, failures, Redis reconnections and docs."""
+import json
 import unittest
 
-from helpers import (API_KEY, API_URL, INTERNAL, SITE, api, drop_redis_connections, http, submit, wait_for_api,
-                     wait_for_task)
+from helpers import (API_KEY, API_ROOT, API_URL, INTERNAL, SITE, api, drop_redis_connections, http, submit,
+                     wait_for_api, wait_for_task)
 
 
 class ApiTest(unittest.TestCase):
@@ -80,6 +81,14 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(drop_redis_connections().startswith(b":"))
         details = wait_for_task(submit(SITE + "/landed"))
         self.assertEqual(details["status"], "SUCCESS", details)
+
+    def test_docs_are_under_the_same_path(self):
+        status, _, page = http("GET", API_ROOT + "/docs")
+        self.assertEqual(status, 200)
+        self.assertIn(b"/webscreencap/openapi.json", page)
+        # So that the requests made from the docs go there too
+        schema = json.loads(http("GET", API_ROOT + "/openapi.json")[2])
+        self.assertEqual(schema["servers"], [{"url": "/webscreencap"}])
 
 
 if __name__ == "__main__":

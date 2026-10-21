@@ -127,6 +127,14 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual((result["finalUrl"], result["contentType"]), (SITE + "/data.json", "application/json"))
         self.assertEqual(http("GET", result["fileUrl"])[2], b'{"captured": "as sent"}')
 
+    def test_page_that_sends_itself_to_a_pdf_while_still_navigating(self):
+        # What the ad blocker did in the page could freeze the tab as it turned into the PDF
+        for ms in (205, 210, 215):
+            with self.subTest(ms=ms):
+                code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=200&to=/never&ms={ms}&to=/slow.pdf")
+                self.assertEqual(code, 0, result)
+                self.assertEqual(http("GET", result["fileUrl"])[2], http("GET", SITE + "/slow.pdf")[2])
+
     def test_sandboxed_file_that_chrome_keeps_no_copy_of_fails(self):
         # A sandboxed page can't download it again
         code, result, _, seconds = run_scraper(SITE + "/video.mp4?sandbox=1")
@@ -172,7 +180,7 @@ class CaptureTest(unittest.TestCase):
 
     def test_downloads_that_the_page_starts_are_left_out(self):
         # Of a file larger than the cap, before the page sends itself to a PDF that Chrome downloads again
-        code, result, _, _ = run_scraper(f"{SITE}/js-redirect?ms=200&to=/big&ms=500&to=/slow.pdf")
+        code, result, _, _ = run_scraper(f"{SITE}/starts-download?file=/big&to=/slow.pdf")
         self.assertEqual(code, 0, result)
         self.assertEqual(result["contentType"], "application/pdf")
         self.assertEqual(http("GET", result["fileUrl"])[2], http("GET", SITE + "/slow.pdf")[2])

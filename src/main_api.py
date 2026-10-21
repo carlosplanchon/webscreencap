@@ -19,11 +19,7 @@ async def lifespan(app: FastAPI):
 
 
 # FastAPI Setup:
-app = FastAPI(
-    root_path="/webscreencap",
-    title="WebScreenCAP",
-    lifespan=lifespan,
-)
+api = FastAPI(title="WebScreenCAP")
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -52,7 +48,7 @@ class ScreenshotRequest(BaseModel):
     url: HttpUrl
 
 
-@app.post(
+@api.post(
     "/api/task/screenshot",
     response_model=TaskInitOut,
     dependencies=[Depends(require_api_key)],
@@ -78,7 +74,7 @@ async def capture_screenshot_with_api_key(request: ScreenshotRequest):
         )
 
 
-@app.get(
+@api.get(
     "/api/task_details/{task_id}",
     response_class=JSONResponse,
     dependencies=[Depends(require_api_key)],
@@ -129,6 +125,11 @@ async def get_task_details_json(task_id: str):
         "result": output
         }
     )
+
+
+# Under /webscreencap, with its docs; mounted apps get no lifespan events, so the broker starts in this one
+app = FastAPI(lifespan=lifespan, openapi_url=None)
+app.mount("/webscreencap", api)
 
 
 if __name__ == "__main__":
