@@ -152,10 +152,13 @@ async function waitForHtml(navigations) {
     }
 }
 
+function hasNoContent(response) {
+    return [204, 205].includes(response.status());
+}
+
 // Navigations that don't load a new document: no content, or a download
 function leavesNoDocument(response) {
-    return [204, 205].includes(response.status())
-        || /^\s*attachment/i.test(response.headers()["content-disposition"] || "");
+    return hasNoContent(response) || /^\s*attachment/i.test(response.headers()["content-disposition"] || "");
 }
 
 // The Content-Type that Chrome goes by: the last one, when the site sends several
@@ -544,7 +547,7 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
             return { response, file, fileName: download.suggestedFilename(), finalUrl: response.url() };
         }
         // Chrome stays on its blank page
-        if (response && [204, 205].includes(response.status())) {
+        if (response && hasNoContent(response)) {
             return { response, finalUrl: response.url() };
         }
         if (!navigations.response || !message.includes(HTTP_ERROR_WITHOUT_BODY)) {
@@ -590,7 +593,7 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
     try {
         // Bad URL settings fail here, before doing any work
         const bucketName = process.env.BUCKET_NAME;
-        const fileUrl = fileUrlBuilder(bucketName);
+        const urlOf = fileUrlBuilder(bucketName);
         // And so does a Chrome that would let WebRTC get past the proxy
         await assertWebRtcPolicy();
 
@@ -640,27 +643,22 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
         const stamp = `${Date.now()}-${crypto.randomBytes(32).toString("hex")}`;
         const headers = capture.response ? capture.response.headers() : {};
         const type = capture.response ? contentType(capture.response) : null;
-        const saved = { screenshotUrl: null, htmlUrl: null, fileUrl: null };
-        if (capture.screenshot) {
-            await uploadToTigris(bucketName, `screenshot-${stamp}.png`, capture.screenshot, "image/png");
-            saved.screenshotUrl = await fileUrl(`screenshot-${stamp}.png`);
-        }
-        if (capture.html !== undefined) {
-            await uploadToTigris(bucketName, `page-${stamp}.html`, capture.html, "text/html; charset=utf-8");
-            saved.htmlUrl = await fileUrl(`page-${stamp}.html`);
-        }
-        if (capture.file) {
-            const fileName = `file-${stamp}${fileExtension(capture.fileName)}`;
-            // How the site sent it, so that it opens or downloads as it did there
-            const disposition = /^[\x20-\x7e]+$/.test(headers["content-disposition"] || "") ? headers["content-disposition"] : undefined;
-            // Without a Content-Type, with the type Chrome found it to be
-            const fileType = type || capture.shownType || "application/octet-stream";
-            await uploadToTigris(bucketName, fileName, capture.file, fileType, disposition);
-            saved.fileUrl = await fileUrl(fileName);
-        }
+        // How the site sent it, so that it opens or downloads as it did there
+        const disposition = /^[\x20-\x7e]+$/.test(headers["content-disposition"] || "") ? headers["content-disposition"] : undefined;
+        // Without a Content-Type, with the type Chrome found it to be
+        const fileType = type || capture.shownType || "application/octet-stream";
+        const save = (fileName, ...upload) => uploadToTigris(bucketName, fileName, ...upload).then(() => urlOf(fileName));
+        // All at once, and null for what the capture doesn't have
+        const [screenshotUrl, htmlUrl, fileUrl] = await Promise.all([
+            capture.screenshot ? save(`screenshot-${stamp}.png`, capture.screenshot, "image/png") : null,
+            capture.html !== undefined ? save(`page-${stamp}.html`, capture.html, "text/html; charset=utf-8") : null,
+            capture.file ? save(`file-${stamp}${fileExtension(capture.fileName)}`, capture.file, fileType, disposition) : null,
+        ]);
 
         console.log(JSON.stringify({
-            ...saved,
+            screenshotUrl,
+            htmlUrl,
+            fileUrl,
             contentType: type,
             httpStatus: capture.response ? capture.response.status() : null,
             finalUrl: capture.finalUrl

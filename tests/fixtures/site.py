@@ -22,6 +22,15 @@ stats = {"connections": 0, "requests": []}
 # Tokens of the URLs that answer something else the second time, already served
 served = set()
 
+
+def served_before(token):
+    """Whether the URL with this token was already served, which it is from now on."""
+    with lock:
+        again = token in served
+        served.add(token)
+    return again
+
+
 # Every way a page can load a URL; {t} is the target and {k} a per-test token
 MECHANISMS = """<!doctype html>
 <html><head><title>mechanisms</title>
@@ -104,17 +113,10 @@ class Handler(BaseHTTPRequestHandler):
             stats["connections"] += 1
 
     def _send(self, code, body, headers=None, encoding="utf-8", content_type="text/html"):
-        data = body.encode(encoding)
-        self.send_response(code)
-        self.send_header("Content-Type", f"{content_type}; charset={encoding}")
-        self.send_header("Content-Length", str(len(data)))
-        for name, value in (headers or {}).items():
-            self.send_header(name, value)
-        self.end_headers()
-        self.wfile.write(data)
+        self._send_bytes(code, body.encode(encoding), f"{content_type}; charset={encoding}", headers)
 
-    def _send_file(self, data, content_type, headers=None, chunk_delay=0, sized=True):
-        self.send_response(200)
+    def _send_bytes(self, code, data, content_type, headers=None, chunk_delay=0, sized=True):
+        self.send_response(code)
         if content_type:
             self.send_header("Content-Type", content_type)
         if sized:
@@ -140,29 +142,25 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in FILES:
             # ?csp=1 forbids the page to fetch anything, its own file included, and ?sandbox=1 also to download it
             csp = "default-src 'none'; sandbox" if "sandbox" in query else "default-src 'none'" if "csp" in query else None
-            return self._send_file(*FILES[url.path], {"Content-Security-Policy": csp} if csp else None)
+            return self._send_bytes(200, *FILES[url.path], {"Content-Security-Policy": csp} if csp else None)
         if url.path.startswith("/untyped/"):
             # Without a Content-Type, so Chrome makes out the type from the content
-            return self._send_file(FILES["/" + url.path.removeprefix("/untyped/")][0], None)
+            return self._send_bytes(200, FILES["/" + url.path.removeprefix("/untyped/")][0], None)
         if url.path == "/slow.pdf":
-            return self._send_file(SLOW_PDF, "application/pdf", chunk_delay=0.06)
+            return self._send_bytes(200, SLOW_PDF, "application/pdf", chunk_delay=0.06)
         if url.path == "/once.pdf":
             # The PDF the first time, and afterwards a redirect, or a page saying that the link has expired
-            with lock:
-                again = query["token"][0] in served
-                served.add(query["token"][0])
+            again = served_before(query["token"][0])
             if again and "then" in query:
                 return self._send(302, "", {"Location": query["then"][0]})
             if again:
                 return self._send(200, "<h1>This link has expired</h1>")
             # ?unsized=1 leaves out its size, as generated files often do
-            return self._send_file(*FILES["/file.pdf"], sized="unsized" not in query)
+            return self._send_bytes(200, *FILES["/file.pdf"], sized="unsized" not in query)
         if url.path == "/once.txt":
             # Text that Chrome doesn't read as the UTF-8 it is, and afterwards other text of the same size
-            with lock:
-                again = query["token"][0] in served
-                served.add(query["token"][0])
-            return self._send_file(f"café {2 if again else 1}".encode(), "text/plain")
+            again = served_before(query["token"][0])
+            return self._send_bytes(200, f"café {2 if again else 1}".encode(), "text/plain")
         if url.path == "/two-content-types":
             # Chrome goes by the last one
             self.send_response(200)
@@ -222,10 +220,7 @@ class Handler(BaseHTTPRequestHandler):
                 return  # the browser hung up
         if url.path == "/reloads-into-download":
             # A page that reloads itself, when its URL is a download
-            with lock:
-                again = query["token"][0] in served
-                served.add(query["token"][0])
-            if again:
+            if served_before(query["token"][0]):
                 return self._send(200, "a file", {"Content-Disposition": "attachment; filename=file.txt"})
             return self._send(200, "<h1>reloading</h1><script>setTimeout(() => location.reload(), 300);</script>")
         if url.path == "/slow-html":
