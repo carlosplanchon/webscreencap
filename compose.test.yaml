@@ -23,13 +23,13 @@ services:
       retries: 30
 
   s3:
-    image: motoserver/moto:5.2.3
+    image: motoserver/moto:5.2.4
     networks:
       default:
         ipv4_address: 10.250.251.10
 
   s3-bucket:
-    image: python:3.13.16-slim-bookworm
+    image: python:3.13.17-slim-bookworm
     command:
       - python
       - -c
@@ -71,14 +71,14 @@ services:
         condition: service_completed_successfully
 
   site:
-    image: python:3.13.16-slim-bookworm
+    image: python:3.13.17-slim-bookworm
     command: ["python", "-I", "/fixtures/site.py", "public"]
     volumes:
       - ./tests/fixtures:/fixtures:ro
     networks: [public]
 
   internal:
-    image: python:3.13.16-slim-bookworm
+    image: python:3.13.17-slim-bookworm
     command: ["python", "-I", "/fixtures/site.py", "internal"]
     volumes:
       - ./tests/fixtures:/fixtures:ro

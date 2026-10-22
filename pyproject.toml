@@ -5,7 +5,7 @@ description = "Captures screenshots and HTML of web pages asynchronously."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.156.4",
+    "fastapi>=0.159.1",
     "redis>=8.1.0",
     "taskiq>=0.13.0,<0.14",
     "taskiq-redis>=1.2.4,<2",

@@ -21,14 +21,14 @@ services:
       retries: 30
 
   s3:
-    image: motoserver/moto:5.2.3
+    image: motoserver/moto:5.2.4
     networks:
       default:
         ipv4_address: 10.250.250.10
 
   # Creates the bucket once moto is up
   s3-bucket:
-    image: python:3.13.16-slim-bookworm
+    image: python:3.13.17-slim-bookworm
     command:
       - python
       - -c

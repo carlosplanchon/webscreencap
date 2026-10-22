@@ -1,7 +1,7 @@
 {
 	"dependencies": {
-		"@aws-sdk/client-s3": "^3.1149.0",
-		"@aws-sdk/s3-request-presigner": "^3.1149.0",
+		"@aws-sdk/client-s3": "^3.1154.0",
+		"@aws-sdk/s3-request-presigner": "^3.1154.0",
 		"@ghostery/adblocker-playwright": "^2.20.1",
 		"cross-fetch": "^4.1.0",
 		"patchright": "^1.64.1"

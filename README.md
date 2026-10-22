@@ -411,7 +411,7 @@ The worker runs as `pwuser`, so Chrome can keep its sandbox. Docker's default se
 # -----------------------------------------------------------------------------
 # 1) Start from your Python base image
 # -----------------------------------------------------------------------------
-FROM python:3.13.16-slim-bookworm
+FROM python:3.13.17-slim-bookworm
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Chrome, etc.
@@ -452,7 +452,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # -----------------------------------------------------------------------------
 # 4) Install pnpm globally
 # -----------------------------------------------------------------------------
-RUN npm install -g pnpm@12.11.2
+RUN npm install -g pnpm@12.14.0
 
 # -----------------------------------------------------------------------------
 # 5) Install Node application dependencies (Patchright, etc.)
@@ -479,7 +479,7 @@ RUN mkdir -p /etc/opt/chrome/policies/managed \
 # 6) Install Python application dependencies (TaskIQ, etc.)
 #    Exact versions from uv.lock, without the dev group.
 # -----------------------------------------------------------------------------
-COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 WORKDIR /app
 
 COPY pyproject.toml uv.lock .python-version /app/
@@ -509,8 +509,8 @@ CMD ["./worker.sh"]
 **`Dockerfile_MAIN_API`**:
 
 ```dockerfile
-FROM python:3.13.16-slim-bookworm
-COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
+FROM python:3.13.17-slim-bookworm
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 WORKDIR /app
 
