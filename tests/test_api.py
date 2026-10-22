@@ -30,6 +30,10 @@ class ApiTest(unittest.TestCase):
                 status, _ = api("POST", "/task/screenshot", {"url": url})
                 self.assertEqual(status, 422)
 
+    def test_screenshot_option_is_a_boolean(self):
+        status, _ = api("POST", "/task/screenshot", {"url": SITE + "/landed", "screenshot": "sometimes"})
+        self.assertEqual(status, 422)
+
     def test_unknown_task_is_404(self):
         # "webscreencap" is also the name of the queue's key in Redis
         for task_id in ("no-such-task", "webscreencap"):
@@ -58,6 +62,14 @@ class ApiTest(unittest.TestCase):
         self.assertIn(b"LANDED", html)
         self.assertEqual((result["file_url"], result["content_type"]), (None, "text/html; charset=utf-8"))
         self.assertEqual(result["message"], "Screenshot and HTML processed successfully")
+
+    def test_screenshot_can_be_left_out(self):
+        details = wait_for_task(submit(SITE + "/landed", screenshot=False))
+        self.assertEqual(details["status"], "SUCCESS", details)
+        result = details["result"]
+        self.assertIsNone(result["screenshot_url"])
+        self.assertIn(b"LANDED", http("GET", result["html_url"])[2])
+        self.assertEqual(result["message"], "HTML processed successfully")
 
     def test_file_is_returned_as_the_site_sent_it(self):
         details = wait_for_task(submit(SITE + "/file.pdf"))

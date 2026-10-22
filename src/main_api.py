@@ -46,6 +46,7 @@ class TaskInitOut(BaseModel):
 class ScreenshotRequest(BaseModel):
     # Only http(s) URLs; anything else (file://, ...) gets a 422
     url: HttpUrl
+    screenshot: bool = True
 
 
 @api.post(
@@ -62,7 +63,8 @@ async def capture_screenshot_with_api_key(request: ScreenshotRequest):
         # Remembered before it's queued, since the worker skips the tasks the API doesn't know
         task_id = broker.id_generator()
         await redis.set(task_marker_key(task_id), "1", ex=RESULT_TTL)
-        await capture_screenshot_and_html.kicker().with_task_id(task_id).kiq(str(request.url))
+        # By name, since the task's second parameter is its context
+        await capture_screenshot_and_html.kicker().with_task_id(task_id).kiq(str(request.url), screenshot=request.screenshot)
         return TaskInitOut(
             id=task_id,
             message="Task started successfully"

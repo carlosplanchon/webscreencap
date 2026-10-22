@@ -467,8 +467,24 @@ function declareUtf8() {
     document.head.prepend(meta);
 }
 
+async function takeScreenshot(page) {
+    // Without a body (SVG, for instance), fullPage would wait for one forever
+    const hasBody = await page.evaluate(() => document.body !== null);
+    // Chrome draws the whole page for a full-page screenshot, which can take minutes on a long one
+    const styles = hasBody ? await page.evaluate(capHeight, MAX_SCREENSHOT_HEIGHT) : null;
+    // With fullPage, the clip is relative to the whole page
+    const screenshot = await page.screenshot(hasBody ? {
+        fullPage: true,
+        clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
+    } : {});
+    if (styles) {
+        await page.evaluate(restoreHeight, styles);
+    }
+    return screenshot;
+}
+
 // Starts over when the page navigates by itself; after MAX_NAVIGATIONS, captures without scrolling
-async function capturePage(page, navigations) {
+async function capturePage(page, navigations, withScreenshot) {
     const requests = trackRequests(page);
     for (let i = 0; ; i++) {
         const started = navigations.started;
@@ -495,18 +511,7 @@ async function capturePage(page, navigations) {
                 await autoScroll(page);
                 await waitForRequests(requests, LAZY_CONTENT_TIMEOUT_MS);
             }
-            // Without a body (SVG, for instance), fullPage would wait for one forever
-            const hasBody = await page.evaluate(() => document.body !== null);
-            // Chrome draws the whole page for a full-page screenshot, which can take minutes on a long one
-            const styles = hasBody ? await page.evaluate(capHeight, MAX_SCREENSHOT_HEIGHT) : null;
-            // With fullPage, the clip is relative to the whole page
-            const screenshot = await page.screenshot(hasBody ? {
-                fullPage: true,
-                clip: { x: 0, y: 0, width: MAX_SCREENSHOT_WIDTH, height: MAX_SCREENSHOT_HEIGHT }
-            } : {});
-            if (styles) {
-                await page.evaluate(restoreHeight, styles);
-            }
+            const screenshot = withScreenshot ? await takeScreenshot(page) : null;
             let htmlContent = null;
             if (!isFile) {
                 await page.evaluate(declareUtf8);
@@ -526,7 +531,7 @@ async function capturePage(page, navigations) {
 }
 
 // The URL as Chrome handles it: a page, a file that Chrome shows, a download, or no content at all
-async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeader) {
+async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeader, withScreenshot) {
     const downloading = page.waitForEvent("download", { timeout: 0 }).catch(() => null);
     try {
         await page.goto(url, { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS });
@@ -557,7 +562,8 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
     // A download that the page starts by itself is left out, and it would keep going until the capture ends
     const leaveOut = (download) => download.cancel().catch(() => {});
     page.on("download", leaveOut);
-    const { screenshot, htmlContent, type } = await capturePage(page, navigations).finally(() => page.off("download", leaveOut));
+    const { screenshot, htmlContent, type } = await capturePage(page, navigations, withScreenshot)
+        .finally(() => page.off("download", leaveOut));
     const { response } = navigations;
     // Chrome shows its own page for network errors, and for HTTP errors without a body (no HTML to save)
     if (page.url().startsWith("chrome-error://")) {
@@ -572,6 +578,10 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
     }
     if (htmlContent === null) {
         const file = await readFile(page, response, type, downloadsPath);
+        // Without its screenshot, nothing would be left of it
+        if (!file && !screenshot) {
+            throw new Error(`The file didn't finish loading in ${FILE_TIMEOUT_MS / 1000} s`);
+        }
         return { response, screenshot, file, shownType: type, fileName: new URL(response.url()).pathname, finalUrl: response.url() };
     }
     return { response, screenshot, html: htmlContent, finalUrl: page.url() };
@@ -579,11 +589,13 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
 
 (async () => {
     const args = process.argv.slice(2);
-    if (args.length !== 1) {
-        return fail("Expected exactly one URL", "Usage: node scraper.js <URL>");
+    const withScreenshot = !args.includes("--no-screenshot");
+    const urls = args.filter((arg) => arg !== "--no-screenshot");
+    if (urls.length !== 1) {
+        return fail("Expected exactly one URL", "Usage: node scraper.js [--no-screenshot] <URL>");
     }
 
-    const url = args[0];
+    const url = urls[0];
 
     // unref() so it doesn't keep the process alive
     setTimeout(() => {
@@ -635,7 +647,7 @@ async function captureUrl(page, url, navigations, downloadsPath, proxyErrorHeade
         const blocker = await loadLatestBlocker();
         await blocker.enableBlockingInPage(page);
 
-        const capture = await captureUrl(page, url, trackNavigations(page), downloadsPath, proxy.errorHeader);
+        const capture = await captureUrl(page, url, trackNavigations(page), downloadsPath, proxy.errorHeader, withScreenshot);
         await context.close();
         proxy.close();
 

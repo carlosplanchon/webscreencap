@@ -143,7 +143,9 @@ def read_result(stdout):
 
 
 @broker.task(task_name="capture_screenshot_and_html")
-async def capture_screenshot_and_html(url: str, context: Annotated[Context, TaskiqDepends()]) -> dict:
+async def capture_screenshot_and_html(
+    url: str, context: Annotated[Context, TaskiqDepends()], screenshot: bool = True,
+) -> dict:
     task_id = context.message.task_id
     # Done already, but its acknowledgment got lost
     if await broker.result_backend.is_result_ready(task_id):
@@ -160,8 +162,9 @@ async def capture_screenshot_and_html(url: str, context: Annotated[Context, Task
         raise ScrapeError("The worker stopped while processing the URL")
 
     script_path = os.path.join(os.path.dirname(__file__), "scraper.js")
+    flags = [] if screenshot else ["--no-screenshot"]
     process = await asyncio.create_subprocess_exec(
-        "node", script_path, url,
+        "node", script_path, *flags, url,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         # Outside the worker's process group, so a Ctrl+C in its terminal lets the capture finish

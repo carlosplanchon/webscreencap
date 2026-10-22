@@ -150,6 +150,24 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(http("GET", result["screenshotUrl"])[2][:8], b"\x89PNG\r\n\x1a\n")
         self.assertLess(seconds, 120)
 
+    def test_file_that_never_finishes_loading_without_a_screenshot_fails(self):
+        # Nothing would be left of it
+        code, result, _, seconds = run_scraper(SITE + "/live", flags=["--no-screenshot"])
+        self.assertEqual(code, 1, result)
+        self.assertIn("The file didn't finish loading in 60 s", result["error"])
+        self.assertLess(seconds, 120)
+
+    def test_screenshot_can_be_left_out(self):
+        # The page is captured the same otherwise, so its HTML has the content that the scroll loads
+        code, result, _, _ = run_scraper(SITE + "/lazy", flags=["--no-screenshot"])
+        self.assertEqual(code, 0, result)
+        self.assertIsNone(result["screenshotUrl"])
+        self.assertIn(b"LAZY-CONTENT", http("GET", result["htmlUrl"])[2])
+        code, result, _, _ = run_scraper(SITE + "/file.pdf", flags=["--no-screenshot"])
+        self.assertEqual(code, 0, result)
+        self.assertIsNone(result["screenshotUrl"])
+        self.assertEqual(http("GET", result["fileUrl"])[2], http("GET", SITE + "/file.pdf")[2])
+
     def test_downloads_are_saved_without_a_screenshot(self):
         # Chrome saves them instead of showing anything: the site asks for it, or Chrome can't show the type
         for path, extension, disposition in (

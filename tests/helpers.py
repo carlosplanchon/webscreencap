@@ -56,8 +56,8 @@ def wait_for_api(timeout=60):
             time.sleep(1)
 
 
-def submit(url):
-    status, body = api("POST", "/task/screenshot", {"url": url})
+def submit(url, **options):
+    status, body = api("POST", "/task/screenshot", {"url": url, **options})
     assert status == 200, (status, body)
     return body["id"]
 
@@ -72,11 +72,11 @@ def wait_for_task(task_id, timeout=180):
     raise AssertionError(f"task {task_id} didn't finish in {timeout} s")
 
 
-def run_scraper(url, env=None, timeout=200):
+def run_scraper(url, env=None, timeout=200, flags=()):
     """Runs scraper.js like the worker; returns (exit code, JSON result, stderr, seconds)."""
     start = time.time()
     process = subprocess.run(
-        ["node", SCRAPER, url], capture_output=True, text=True, timeout=timeout,
+        ["node", SCRAPER, *flags, url], capture_output=True, text=True, timeout=timeout,
         env={**os.environ, **(env or {})},
     )
     lines = process.stdout.strip().splitlines()
