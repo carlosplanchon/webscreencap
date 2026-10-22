@@ -2,7 +2,9 @@
 
 import os
 import secrets
+import tomllib
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
@@ -18,8 +20,13 @@ async def lifespan(app: FastAPI):
     await broker.shutdown()
 
 
+# The project's version, for the docs
+with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as pyproject:
+    VERSION = tomllib.load(pyproject)["project"]["version"]
+
+
 # FastAPI Setup:
-api = FastAPI(title="WebScreenCAP")
+api = FastAPI(title="WebScreenCAP", version=VERSION)
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)

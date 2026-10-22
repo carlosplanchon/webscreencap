@@ -1,5 +1,7 @@
 """The API end to end: authentication, validation, results, failures, Redis reconnections and docs."""
 import json
+import os
+import tomllib
 import unittest
 
 from helpers import (API_KEY, API_ROOT, API_URL, INTERNAL, SITE, api, drop_redis_connections, http, submit,
@@ -101,6 +103,12 @@ class ApiTest(unittest.TestCase):
         # So that the requests made from the docs go there too
         schema = json.loads(http("GET", API_ROOT + "/openapi.json")[2])
         self.assertEqual(schema["servers"], [{"url": "/webscreencap"}])
+
+    def test_docs_show_the_project_version(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), "rb") as pyproject:
+            version = tomllib.load(pyproject)["project"]["version"]
+        schema = json.loads(http("GET", API_ROOT + "/openapi.json")[2])
+        self.assertEqual(schema["info"]["version"], version)
 
 
 if __name__ == "__main__":
