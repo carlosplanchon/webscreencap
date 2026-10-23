@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # 1) Start from your Python base image
 # -----------------------------------------------------------------------------
-FROM python:3.13.17-slim-bookworm
+FROM python:3.15.1-slim-bookworm
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Chrome, etc.

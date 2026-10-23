@@ -28,7 +28,7 @@ services:
 
   # Creates the bucket once moto is up
   s3-bucket:
-    image: python:3.13.17-slim-bookworm
+    image: python:3.15.1-slim-bookworm
     command:
       - python
       - -c

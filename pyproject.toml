@@ -3,7 +3,7 @@ name = "webscreencap"
 version = "1.0.0"
 description = "Captures screenshots and HTML of web pages asynchronously."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.159.1",
     "redis>=8.1.0",

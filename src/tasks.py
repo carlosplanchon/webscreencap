@@ -130,6 +130,12 @@ class ExpectedErrorsFilter(logging.Filter):
 
 
 logging.getLogger("taskiq.receiver.receiver").addFilter(ExpectedErrorsFilter())
+# Since Python 3.14 multiprocessing starts the worker processes with forkserver instead of fork, so
+# they don't inherit the logging set up by the taskiq CLI, and taskiq only sets it up again under
+# spawn: without this, the worker's INFO messages (such as "Listening started.") would be dropped.
+# In the main process, where logging is already configured, this does nothing.
+logging.basicConfig(level=logging.INFO,
+                    format="[%(asctime)s][%(name)s][%(levelname)-7s][%(processName)s] %(message)s")
 
 
 def read_result(stdout):

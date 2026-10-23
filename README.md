@@ -1,6 +1,9 @@
 # WebScreenCAP
 
 [![Tests](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml/badge.svg)](https://github.com/carlosplanchon/webscreencap/actions/workflows/tests.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/carlosplanchon/webscreencap)
 
 A microservice that captures screenshots and HTML content from URLs asynchronously using **FastAPI** and **TaskIQ**, leveraging **Node.js** with **Patchright** (a Playwright patched to avoid bot detection) and **Google Chrome** behind the scenes. Captured artifacts (screenshots, HTML) are uploaded to an S3-compatible storage (e.g., Tigris, MinIO, AWS S3).
 
@@ -101,7 +104,7 @@ A microservice that captures screenshots and HTML content from URLs asynchronous
 
 ## Requirements
 
-- **Python** ≥ 3.13 (uv installs it if it's missing)
+- **Python** ≥ 3.11 (uv installs it if it's missing)
 - **[uv](https://docs.astral.sh/uv/)** for Python dependencies
 - **Node.js** 22 or later (the worker image uses 24)
 - **npm** / **pnpm** / **yarn** for installing Node dependencies
@@ -411,7 +414,7 @@ The worker runs as `pwuser`, so Chrome can keep its sandbox. Docker's default se
 # -----------------------------------------------------------------------------
 # 1) Start from your Python base image
 # -----------------------------------------------------------------------------
-FROM python:3.13.17-slim-bookworm
+FROM python:3.15.1-slim-bookworm
 
 # -----------------------------------------------------------------------------
 # 2) Install system dependencies required by Node.js, Chrome, etc.
@@ -509,7 +512,7 @@ CMD ["./worker.sh"]
 **`Dockerfile_MAIN_API`**:
 
 ```dockerfile
-FROM python:3.13.17-slim-bookworm
+FROM python:3.15.1-slim-bookworm
 COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 WORKDIR /app
